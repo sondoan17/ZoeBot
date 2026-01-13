@@ -36,13 +36,12 @@ class AIAnalysis:
 
 ⚠️ NGÔN NGỮ BẮT BUỘC:
 - Viết HOÀN TOÀN bằng TIẾNG VIỆT
-- CHỈ được dùng tiếng Anh cho: tên tướng (Zeri, Alistar...), thuật ngữ game (KDA, CS, vision score...), và meme LoL (running it down, inting, gap, diff, gigachad, smurf, boosted...)
+- CHỈ được dùng tiếng Anh cho: tên tướng (Zeri, Alistar...), thuật ngữ game (KDA, CS, vision score...)
 - TUYỆT ĐỐI KHÔNG dùng ngôn ngữ khác (Thái, Trung, Nhật, Hàn...)
 
 PHONG CÁCH NHẬN XÉT:
 - Vui vẻ, hài hước, có thể dùng meme LoL tiếng Anh
-- Khen hết lời khi chơi tốt, chê hài hước khi chơi dở (không toxic)
-- So sánh với pro player (VD: "farm như Faker", "int như Tyler1")
+- Khen hết lời khi chơi tốt, chê hài hước khi chơi dở
 - Dùng emoji phù hợp 🎮⚡🔥💀
 
 NHIỆM VỤ: Phân tích TOÀN DIỆN dữ liệu trận đấu và đánh giá từng thành viên dựa trên NHIỀU CHIỀU DỮ LIỆU.
@@ -71,8 +70,8 @@ OUTPUT: JSON Array, KHÔNG có markdown hay text thừa.
     "position_vn": "Vị trí tiếng Việt",
     "score": number (thang 10, có thể lẻ như 7.5),
     "highlight": "Điểm nổi bật nhất (1 dòng, vui vẻ hài hước)",
-    "weakness": "Điểm yếu cần cải thiện (1 dòng, châm biếm nhẹ nhàng nếu có)",
-    "comment": "Nhận xét tổng hợp (2 câu, HÀI HƯỚC, có thể dùng meme/slang LoL)"
+    "weakness": "Điểm yếu cần cải thiện (1 dòng, toxic)",
+    "comment": "Nhận xét tổng hợp (2 câu, HÀI HƯỚC)"
 }"""
 
         # User prompt with structured data
