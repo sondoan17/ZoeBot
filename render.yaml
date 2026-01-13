@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: zoebot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: RIOT_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
