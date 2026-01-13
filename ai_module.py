@@ -10,7 +10,7 @@ class AIAnalysis:
     def __init__(self, api_key):
         self.api_key = api_key
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.model = "tngtech/deepseek-r1t2-chimera:free"
+        self.model = "google/gemini-2.0-flash-exp:free"
         
         if not api_key:
             logger.error("OpenRouter API Key is missing!")
