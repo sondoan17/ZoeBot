@@ -10,7 +10,7 @@ class AIAnalysis:
     def __init__(self, api_key):
         self.api_key = api_key
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.model = "google/gemini-2.0-flash-exp:free" # Default free model, can be changed
+        self.model = "xiaomi/mimo-v2-flash:free" # Default free model, can be changed
         
         if not api_key:
             logger.error("OpenRouter API Key is missing!")
@@ -63,7 +63,8 @@ class AIAnalysis:
                     "role": "user",
                     "content": prompt
                 }
-            ]
+            ],
+            "reasoning": {"enabled": True}
         }
         
         headers = {
