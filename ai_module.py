@@ -10,7 +10,7 @@ class AIAnalysis:
     def __init__(self, api_key):
         self.api_key = api_key
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.model = "google/gemini-2.0-flash-exp:free"
+        self.model = "xiaomi/mimo-v2-flash:free"
         
         if not api_key:
             logger.error("OpenRouter API Key is missing!")
@@ -30,36 +30,51 @@ class AIAnalysis:
         if not teammates:
             return "Error: Teammates data missing."
 
-        # System prompt (instructions)
-        system_prompt = """Bạn là một Huấn Luyện Viên Liên Minh Huyền Thoại chuyên nghiệp, tính cách hài hước nhưng tiêu chuẩn rất cao và khắt khe.
+        # Enhanced system prompt with multi-dimensional analysis
+        system_prompt = """Bạn là một Huấn Luyện Viên Liên Minh Huyền Thoại chuyên nghiệp cấp cao (Challenger), tính cách hài hước nhưng tiêu chuẩn cực kỳ khắt khe.
 
-Nhiệm vụ: Phân tích dữ liệu trận đấu được cung cấp dưới dạng JSON và đưa ra đánh giá cho từng thành viên trong đội.
+NHIỆM VỤ: Phân tích TOÀN DIỆN dữ liệu trận đấu và đánh giá từng thành viên dựa trên NHIỀU CHIỀU DỮ LIỆU.
 
-Quy tắc bắt buộc:
-1. Đánh giá dựa trên chỉ số (KDA, Sát thương, Farm, Tầm nhìn).
-2. Chuyển đổi Role sang Tiếng Việt: TOP -> Đường trên, JUNGLE -> Đi rừng, MIDDLE -> Đường giữa, BOTTOM -> Xạ thủ, UTILITY -> Hỗ trợ.
-3. Output trả về dưới dạng JSON Array, tuyệt đối không viết thêm lời dẫn hay markdown thừa.
+QUY TẮC PHÂN TÍCH (Bắt buộc):
+1. **Combat Performance**: Đánh giá KDA, killParticipation (%), takedowns, soloKills, largestKillingSpree. Chết nhiều = trừ điểm nặng.
+2. **Damage Profile**: Xem damagePerMinute, teamDamagePercentage (%). ADC/Mid phải có damage cao. Support/Tank thấp là bình thường.
+3. **Laning & Economy**: csPerMinute, goldPerMinute, laneMinionsFirst10Minutes, maxCsAdvantageOnLaneOpponent. CS thấp = laning yếu.
+4. **Macro & Objectives**: dragonTakedowns, baronTakedowns, turretTakedowns, damageDealtToObjectives. Jungle/Top phải tham gia objectives.
+5. **Vision Control**: visionScorePerMinute, wardsPlaced, controlWardsPlaced, wardsKilled. Support phải có vision cao nhất. Jungle cũng cần vision.
+6. **Mechanics**: skillshotsHit, skillshotsDodged. Nếu champion dựa vào skillshot mà hit thấp = cơ học kém.
 
-Cấu trúc JSON trả về cho mỗi người chơi:
+SO SÁNH THEO VAI TRÒ:
+- TOP: Farm, damage, solo kills, turret damage
+- JUNGLE: Kill participation, objective control, vision, gank success
+- MIDDLE: Damage, roam (kill participation), cs
+- BOTTOM (ADC): Damage %, cs, deaths thấp
+- UTILITY (Support): Vision, CC time, kill participation, deaths thấp
+
+VỊ TRÍ TIẾNG VIỆT: TOP→Đường trên, JUNGLE→Đi rừng, MIDDLE→Đường giữa, BOTTOM→Xạ thủ, UTILITY→Hỗ trợ
+
+OUTPUT: JSON Array, KHÔNG có markdown hay text thừa.
 {
     "champion": "Tên tướng",
     "player_name": "Tên người chơi",
     "position_vn": "Vị trí tiếng Việt",
-    "score": "Điểm số (thang 10, kiểu số thực)",
-    "comment": "Lời bình ngắn (tối đa 2 câu, tập trung vào phong độ, không nhắc đồ đạc)"
+    "score": number (thang 10, có thể lẻ như 7.5),
+    "highlight": "Điểm nổi bật nhất (1 dòng)",
+    "weakness": "Điểm yếu cần cải thiện (1 dòng, nếu có)",
+    "comment": "Nhận xét tổng hợp (2 câu, dựa trên nhiều chiều dữ liệu)"
 }"""
 
-        # User prompt (data)
-        user_prompt = f"""Dưới đây là dữ liệu trận đấu của team cần phân tích:
-
-Thông tin trận đấu:
+        # User prompt with structured data
+        user_prompt = f"""THÔNG TIN TRẬN ĐẤU:
 - Chế độ: {match_data.get('gameMode')}
-- Thời lượng: {match_data.get('gameDuration')} giây
-- Kết quả: {'Thắng' if match_data.get('win') else 'Thua'}
-- ID trận: {match_data.get('matchId')}
+- Thời lượng: {match_data.get('gameDurationMinutes')} phút
+- Kết quả: {'🏆 THẮNG' if match_data.get('win') else '💀 THUA'}
+- ID: {match_data.get('matchId')}
+- Người chơi chính: {match_data.get('target_player_name')}
 
-Dữ liệu 5 thành viên trong team:
-{json.dumps(teammates, indent=2, ensure_ascii=False)}"""
+DỮ LIỆU 5 THÀNH VIÊN TEAM:
+{json.dumps(teammates, indent=2, ensure_ascii=False)}
+
+Hãy phân tích chi tiết từng người chơi theo các tiêu chí đã nêu."""
 
         payload = {
             "model": self.model,
@@ -78,7 +93,6 @@ Dữ liệu 5 thành viên trong team:
         }
 
         try:
-            # Run blocking call in a separate thread
             response = await asyncio.to_thread(
                 requests.post,
                 url=self.api_url,
@@ -89,8 +103,6 @@ Dữ liệu 5 thành viên trong team:
             if response.status_code == 200:
                 result = response.json()
                 ai_content = result['choices'][0]['message']['content']
-                
-                # Parse JSON and format for Discord
                 return self._format_discord_message(ai_content, match_data)
             else:
                 logger.error(f"OpenRouter Error: {response.status_code} - {response.text}")
@@ -120,12 +132,11 @@ Dữ liệu 5 thành viên trong team:
             
             # Build Discord message
             win_status = "🏆 **THẮNG**" if match_data.get('win') else "💀 **THUA**"
-            duration_mins = match_data.get('gameDuration', 0) // 60
-            duration_secs = match_data.get('gameDuration', 0) % 60
+            duration = match_data.get('gameDurationMinutes', 0)
             
             lines = [
                 f"📊 **PHÂN TÍCH TRẬN ĐẤU** | {win_status}",
-                f"⏱️ Thời lượng: {duration_mins}:{duration_secs:02d} | Mode: {match_data.get('gameMode')}",
+                f"⏱️ Thời lượng: {duration} phút | Mode: {match_data.get('gameMode')}",
                 f"🆔 `{match_data.get('matchId')}`",
                 "",
                 "━━━━━━━━━━━━━━━━━━━━━━"
@@ -144,14 +155,19 @@ Dữ liệu 5 thành viên trong team:
                     emoji = "❌"
                 
                 lines.append(f"{emoji} **{p.get('champion')}** - {p.get('player_name')} ({p.get('position_vn')}) - **{score}/10**")
-                lines.append(f"   _{p.get('comment')}_")
+                
+                if p.get('highlight'):
+                    lines.append(f"   💪 {p.get('highlight')}")
+                if p.get('weakness'):
+                    lines.append(f"   📉 {p.get('weakness')}")
+                    
+                lines.append(f"   📝 _{p.get('comment')}_")
                 lines.append("")
             
             return "\n".join(lines)
             
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse AI JSON: {e}")
-            # Fallback: return raw content if parsing fails
             return f"📊 **Phân tích trận đấu:**\n\n{ai_content}"
         except Exception as e:
             logger.error(f"Error formatting Discord message: {e}")
