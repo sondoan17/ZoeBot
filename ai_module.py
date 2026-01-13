@@ -60,7 +60,7 @@ class AIAnalysis:
             # Run blocking call in a separate thread
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
-                model="gemini-3-flash",
+                model="gemini-2.0-flash-exp",
                 contents=prompt
             )
             return response.text
