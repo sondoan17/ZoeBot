@@ -61,4 +61,4 @@ class AIAnalysis:
             return response.text
         except Exception as e:
             logger.error(f"AI Generation Error: {e}")
-            return "⚠️ Xin lỗi, tôi không thể phân tích trận đấu này do lỗi hệ thống AI."
+            return f"⚠️ Lỗi hệ thống AI: {str(e)}"
