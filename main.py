@@ -98,6 +98,52 @@ async def untrack(ctx, *, riot_id: str):
     except Exception as e:
         await ctx.send(f"⚠️ Có lỗi xảy ra: {str(e)}")
 
+@bot.command(aliases=['review', 'phantich'])
+async def analyze(ctx, *, riot_id: str):
+    """
+    Analyze the last match of a player. Format: !analyze Name#Tag
+    """
+    try:
+        if '#' not in riot_id:
+            await ctx.send("❌ Sai định dạng! Vui lòng dùng: `Name#Tag` (VD: Faker#SKT)")
+            return
+
+        game_name, tag_line = riot_id.split('#', 1)
+        await ctx.send(f"🔍 Đang tìm kiếm trận đấu gần nhất của **{game_name}** #{tag_line}...")
+
+        puuid = riot_client.get_puuid_by_riot_id(game_name, tag_line)
+        
+        if not puuid:
+            await ctx.send(f"❌ Không tìm thấy người chơi **{riot_id}**. Kiểm tra lại tên và tag.")
+            return
+
+        # Get latest match
+        matches = riot_client.get_match_ids_by_puuid(puuid, count=1)
+        if not matches:
+             await ctx.send("❌ Người chơi này chưa đánh trận nào gần đây.")
+             return
+
+        last_match_id = matches[0]
+        await ctx.send(f"⏳ Đang phân tích trận đấu `{last_match_id}` của **{riot_id}**...")
+
+        match_details = riot_client.get_match_details(last_match_id)
+        if match_details:
+            filtered_data = riot_client.parse_match_data(match_details, puuid)
+            if filtered_data:
+                analysis = await ai_client.analyze_match(filtered_data)
+                if len(analysis) > 2000:
+                    for i in range(0, len(analysis), 2000):
+                        await ctx.send(analysis[i:i+2000])
+                else:
+                    await ctx.send(analysis)
+            else:
+                await ctx.send("⚠️ Không thể lọc dữ liệu trận đấu.")
+        else:
+            await ctx.send("⚠️ Không thể lấy dữ liệu chi tiết của trận đấu.")
+
+    except Exception as e:
+        await ctx.send(f"⚠️ Có lỗi xảy ra: {str(e)}")
+
 @tasks.loop(minutes=1.0)
 async def check_matches():
     if not tracked_players:
