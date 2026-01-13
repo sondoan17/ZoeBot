@@ -10,7 +10,7 @@ class AIAnalysis:
     def __init__(self, api_key):
         self.api_key = api_key
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.model = "xiaomi/mimo-v2-flash:free" # Default free model, can be changed
+        self.model = "tngtech/deepseek-r1t2-chimera:free" # Default free model, can be changed
         
         if not api_key:
             logger.error("OpenRouter API Key is missing!")
@@ -32,30 +32,36 @@ class AIAnalysis:
         # Construct the prompt
         prompt = f"""
         Bạn là một huấn luyện viên Liên Minh Huyền Thoại (League of Legends) chuyên nghiệp, vui tính và khắt khe.
-        Hãy phân tích dữ liệu trận đấu dưới đây cho người chơi: {target_player.get('riotIdGameName')} (Champion: {target_player.get('championName')}, Lane: {target_player.get('teamPosition')}).
+        Hãy phân tích trận đấu của người chơi: {target_player.get('riotIdGameName')} (Champion: {target_player.get('championName')}) và toàn bộ đồng đội trong team của họ.
 
         **Thông tin trận đấu:**
         - Chế độ: {match_data.get('gameMode')}
         - Thời lượng: {match_data.get('gameDuration')} giây
         - ID trận: {match_data.get('matchId')}
         
-        **Dữ liệu người chơi:**
-        {json.dumps(target_player, indent=2)}
+        **Dữ liệu chi tiết các người chơi:**
+        {json.dumps(match_data.get('all_players'), indent=2)}
 
         **Yêu cầu phân tích:**
-        1. **Tóm tắt nhanh:** Trận đấu diễn ra thế nào? (Thắng/Thua, KDA có tốt không?).
-        2. **Đánh giá chi tiết:**
-           - Khả năng farm (CS).
-           - Đóng góp sát thương (Damage Dealt).
-           - Khả năng sống sót (Deaths, Damage Taken).
-           - Tầm nhìn (Vision Score).
-           - Cách lên đồ (Items): Phân tích xem build đồ có hợp lý không.
-        3. **Lời khuyên:** Đưa ra 2-3 lời khuyên cụ thể để cải thiện.
-        4. **Chấm điểm:** Chấm điểm màn trình diễn trên thang 10.
+        Hãy xác định team của người chơi mục tiêu ({target_player.get('riotIdGameName')}) và **chỉ phân tích 5 thành viên trong team đó**.
+        
+        **Định dạng Output (Bắt buộc tuân thủ):**
+        Với mỗi thành viên trong team, hãy xuất ra theo định dạng sau (không dùng markdown table, dùng list hoặc block):
 
-        **Output format:** Trả về định dạng Markdown đẹp, dễ đọc. Dùng emoji phù hợp.
+        [Tên Tướng] [Tên người chơi] ([Vị trí Tiếng Việt]) - [Điểm số]/10 - [Lời bình về KDA, sát thương, farm, đóng góp... tối đa 2 câu].
+
+        ---
+        **Ví dụ mẫu:**
+        Zeri - Arsene Lupin - Xạ thủ - 7.5/10 - Người gây sát thương mạnh nhất trận đấu (47,240) và chỉ số lính ấn tượng (378). Zeri đã nỗ lực hết mình nhưng không thể bù đắp được khoảng trống của đồng đội.
+
+        ... (Lặp lại cho đủ 5 thành viên)
+
+        **Lưu ý:**
+        - Vị trí Tiếng Việt: Đường trên, Đi rừng, Đường giữa, Xạ thủ, Hỗ trợ.
+        - Sắp xếp theo thứ tự lane nếu có thể.
+        - Đánh giá khách quan dựa trên stats.
         """
-
+        
         payload = {
             "model": self.model,
             "messages": [
