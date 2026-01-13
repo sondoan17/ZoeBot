@@ -39,9 +39,9 @@ async def ping(ctx):
     await ctx.send('Pong!')
 
 @bot.command()
-async def track(ctx, riot_id: str):
+async def track(ctx, *, riot_id: str):
     """
-    Track a player. Format: !track Name#Tag
+    Track a player. Format: !track Name#Tag (Supports spaces)
     """
     try:
         if '#' not in riot_id:
