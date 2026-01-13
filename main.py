@@ -1,3 +1,4 @@
+import os
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from riot_module import RiotAPI
