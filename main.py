@@ -1,10 +1,10 @@
-import os
-import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from riot_module import RiotAPI
 from ai_module import AIAnalysis
+from keep_alive import keep_alive
 import asyncio
+
 
 # Load environment variables
 load_dotenv()
@@ -125,5 +125,7 @@ if __name__ == "__main__":
     if not DISCORD_TOKEN:
         print("Error: DISCORD_TOKEN not found in .env file.")
     else:
+        print("Starting web server...")
+        keep_alive() # Run fake web server for Render
         print("Starting bot...")
         bot.run(DISCORD_TOKEN)
