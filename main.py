@@ -73,7 +73,7 @@ async def track(ctx, *, riot_id: str):
     except Exception as e:
         await ctx.send(f"⚠️ Có lỗi xảy ra: {str(e)}")
 
-@tasks.loop(minutes=2.0)
+@tasks.loop(minutes=1.0)
 async def check_matches():
     if not tracked_players:
         return
