@@ -57,7 +57,8 @@ class RiotAPI:
 
     def parse_match_data(self, full_data, target_puuid):
         """
-        Filter and extract relevant data for AI analysis
+        Filter and extract relevant data for AI analysis.
+        Returns only the 5 teammates (including target) pre-filtered.
         """
         # Checks
         if not full_data or 'info' not in full_data:
@@ -67,51 +68,59 @@ class RiotAPI:
         game_duration = info.get('gameDuration', 0)
         game_mode = info.get('gameMode', 'UNKNOWN')
         
-        # Find the target player
+        # Find the target player first to get their teamId
         target_player = None
+        target_team_id = None
         participants_data = []
         
         participants = info.get('participants', [])
+        
+        # First pass: find target player and their team
         for p in participants:
-            # Extract basic stats
+            if p.get('puuid') == target_puuid:
+                target_team_id = p.get('teamId')
+                break
+        
+        if target_team_id is None:
+            logger.warning("Target player not found in match participants")
+            return None
+        
+        # Second pass: extract data for teammates only
+        for p in participants:
+            if p.get('teamId') != target_team_id:
+                continue  # Skip enemies
+            
+            # Extract basic stats (only what AI needs)
             p_data = {
                 'championName': p.get('championName'),
+                'riotIdGameName': p.get('riotIdGameName'),
                 'teamPosition': p.get('teamPosition'),
                 'kills': p.get('kills'),
                 'deaths': p.get('deaths'),
                 'assists': p.get('assists'),
-                'kda': p.get('challenges', {}).get('kda', 0), # Some endpoints put kda in challenges
                 'totalDamageDealtToChampions': p.get('totalDamageDealtToChampions'),
-                'totalDamageTaken': p.get('totalDamageTaken'),
-                'goldEarned': p.get('goldEarned'),
                 'visionScore': p.get('visionScore'),
                 'cs': p.get('totalMinionsKilled', 0) + p.get('neutralMinionsKilled', 0),
                 'win': p.get('win'),
-                'items': [p.get(f'item{i}') for i in range(7)],
-                'puuid': p.get('puuid'),
-                'riotIdGameName': p.get('riotIdGameName'),
-                'riotIdTagline': p.get('riotIdTagline')
             }
             
-            # Recalculate KDA if needed
+            # Calculate KDA
             if p.get('deaths') == 0:
-                p_data['kda_calculated'] = p.get('kills') + p.get('assists')
+                p_data['kda'] = p.get('kills', 0) + p.get('assists', 0)
             else:
-                p_data['kda_calculated'] = (p.get('kills') + p.get('assists')) / p.get('deaths')
+                p_data['kda'] = round((p.get('kills', 0) + p.get('assists', 0)) / p.get('deaths'), 2)
 
             participants_data.append(p_data)
             
             if p.get('puuid') == target_puuid:
                 target_player = p_data
 
-        if not target_player:
-            logger.warning("Target player not found in match participants")
-            # Might return everything anyway, but highlighting target is useful
-        
         return {
             'matchId': full_data.get('metadata', {}).get('matchId'),
             'gameDuration': game_duration,
             'gameMode': game_mode,
+            'win': target_player.get('win') if target_player else None,
             'target_player': target_player,
-            'all_players': participants_data # AI might need context of other players
+            'teammates': participants_data  # Pre-filtered 5 teammates only
         }
+
