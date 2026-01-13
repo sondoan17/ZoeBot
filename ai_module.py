@@ -1,4 +1,4 @@
-from google import genai
+import requests
 import json
 import logging
 import asyncio
@@ -8,19 +8,19 @@ logger = logging.getLogger(__name__)
 
 class AIAnalysis:
     def __init__(self, api_key):
-        self.client = None
-        if not api_key:
-            logger.error("Gemini API Key is missing!")
-            return
+        self.api_key = api_key
+        self.api_url = "https://openrouter.ai/api/v1/chat/completions"
+        self.model = "google/gemini-2.0-flash-exp:free" # Default free model, can be changed
         
-        self.client = genai.Client(api_key=api_key)
+        if not api_key:
+            logger.error("OpenRouter API Key is missing!")
 
     async def analyze_match(self, match_data):
         """
-        Sends match data to Gemini to generate a coach-like analysis.
+        Sends match data to OpenRouter to generate a coach-like analysis.
         """
-        if not self.client:
-             return "⚠️ Lỗi: Chưa cấu hình Gemini API Key."
+        if not self.api_key:
+             return "⚠️ Lỗi: Chưa cấu hình OpenRouter API Key."
 
         if not match_data:
             return "Error: No match data provided."
@@ -56,14 +56,39 @@ class AIAnalysis:
         **Output format:** Trả về định dạng Markdown đẹp, dễ đọc. Dùng emoji phù hợp.
         """
 
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "HTTP-Referer": "https://github.com/sondoan17/ZoeBot", # Optional
+            "X-Title": "ZoeBot", # Optional
+            "Content-Type": "application/json"
+        }
+
         try:
             # Run blocking call in a separate thread
             response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model="gemini-2.0-flash-exp",
-                contents=prompt
+                requests.post,
+                url=self.api_url,
+                headers=headers,
+                data=json.dumps(payload)
             )
-            return response.text
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content']
+            else:
+                logger.error(f"OpenRouter Error: {response.status_code} - {response.text}")
+                return f"⚠️ Lỗi OpenRouter ({response.status_code}): {response.text}"
+                
         except Exception as e:
             logger.error(f"AI Generation Error: {e}")
             return f"⚠️ Lỗi hệ thống AI: {str(e)}"

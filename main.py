@@ -13,7 +13,7 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 RIOT_API_KEY = os.getenv('RIOT_API_KEY')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 
 # Bot setup
 intents = discord.Intents.default()
@@ -21,7 +21,7 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 riot_client = RiotAPI(RIOT_API_KEY)
-ai_client = AIAnalysis(GEMINI_API_KEY)
+ai_client = AIAnalysis(OPENROUTER_API_KEY)
 
 # Tracking Data (In-memory for now)
 # Format: {puuid: {'last_match_id': str, 'channel_id': int, 'name': str}}
