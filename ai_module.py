@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 class AIAnalysis:
     def __init__(self, api_key):
+        self.model = None
         if not api_key:
             logger.error("Gemini API Key is missing!")
             return
@@ -18,6 +19,9 @@ class AIAnalysis:
         """
         Sends match data to Gemini to generate a coach-like analysis.
         """
+        if not self.model:
+             return "⚠️ Lỗi: Chưa cấu hình Gemini API Key."
+
         if not match_data:
             return "Error: No match data provided."
 
