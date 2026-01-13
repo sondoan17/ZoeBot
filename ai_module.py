@@ -1,25 +1,25 @@
-import google.generativeai as genai
+from google import genai
 import json
 import logging
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class AIAnalysis:
     def __init__(self, api_key):
-        self.model = None
+        self.client = None
         if not api_key:
             logger.error("Gemini API Key is missing!")
             return
         
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        self.client = genai.Client(api_key=api_key)
 
     async def analyze_match(self, match_data):
         """
         Sends match data to Gemini to generate a coach-like analysis.
         """
-        if not self.model:
+        if not self.client:
              return "⚠️ Lỗi: Chưa cấu hình Gemini API Key."
 
         if not match_data:
@@ -57,7 +57,12 @@ class AIAnalysis:
         """
 
         try:
-            response = await self.model.generate_content_async(prompt)
+            # Run blocking call in a separate thread
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model="gemini-3-flash",
+                contents=prompt
+            )
             return response.text
         except Exception as e:
             logger.error(f"AI Generation Error: {e}")
