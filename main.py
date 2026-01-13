@@ -73,6 +73,31 @@ async def track(ctx, *, riot_id: str):
     except Exception as e:
         await ctx.send(f"⚠️ Có lỗi xảy ra: {str(e)}")
 
+@bot.command()
+async def untrack(ctx, *, riot_id: str):
+    """
+    Stop tracking a player. Format: !untrack Name#Tag
+    """
+    try:
+        if '#' not in riot_id:
+            await ctx.send("❌ Sai định dạng! Vui lòng dùng: `Name#Tag` (VD: Faker#SKT)")
+            return
+
+        game_name, tag_line = riot_id.split('#', 1)
+        
+        # Check if we can find them by PUUID (most accurate)
+        puuid = riot_client.get_puuid_by_riot_id(game_name, tag_line)
+        
+        if puuid and puuid in tracked_players:
+            del tracked_players[puuid]
+            await ctx.send(f"✅ Đã huỷ theo dõi **{riot_id}**.")
+            print(f"Untracked: {riot_id} (PUUID: {puuid})")
+        else:
+            await ctx.send(f"❌ Không tìm thấy **{riot_id}** trong danh sách đang theo dõi.")
+
+    except Exception as e:
+        await ctx.send(f"⚠️ Có lỗi xảy ra: {str(e)}")
+
 @tasks.loop(minutes=1.0)
 async def check_matches():
     if not tracked_players:
