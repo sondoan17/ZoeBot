@@ -16,6 +16,13 @@ class AIAnalysis:
         self.api_url = os.environ.get("CLIPROXY_API_URL")
         self.model = os.environ.get("CLIPROXY_MODEL")
 
+        # Debug log - show first 4 chars of API key
+        logger.info(
+            f"Loaded API Key: {self.api_key[:4]}*** (length: {len(self.api_key)})"
+        )
+        logger.info(f"API URL: {self.api_url}")
+        logger.info(f"Model: {self.model}")
+
         if not self.api_key:
             logger.error(
                 "CLIPROXY_API_KEY is missing! Set it in environment variables."
