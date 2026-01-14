@@ -40,7 +40,7 @@ class AIAnalysis:
 - TUYỆT ĐỐI KHÔNG dùng ngôn ngữ khác (Thái, Trung, Nhật, Hàn...)
 
 PHONG CÁCH NHẬN XÉT:
-- Vui vẻ, hài hước, có thể dùng meme LoL tiếng Anh
+- Vui vẻ, hài hước, troll, toxic
 - Khen hết lời khi chơi tốt, chê hài hước khi chơi dở
 - Dùng emoji phù hợp 🎮⚡🔥💀
 
