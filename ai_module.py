@@ -13,10 +13,8 @@ class AIAnalysis:
     def __init__(self, api_key=None):
         # Using cliproxy API - load from environment variables
         self.api_key = api_key or os.environ.get("CLIPROXY_API_KEY", "")
-        self.api_url = os.environ.get(
-            "CLIPROXY_API_URL", "https://ai.mimichatbot.fun/v1/chat/completions"
-        )
-        self.model = os.environ.get("CLIPROXY_MODEL", "gemini-claude-opus-4-5-thinking")
+        self.api_url = os.environ.get("CLIPROXY_API_URL")
+        self.model = os.environ.get("CLIPROXY_MODEL")
 
         if not self.api_key:
             logger.error(
