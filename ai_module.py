@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 
 import requests
 
@@ -9,17 +10,18 @@ logger = logging.getLogger(__name__)
 
 
 class AIAnalysis:
-    def __init__(self, api_key):
-        self.api_key = api_key
-        self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        # Use preset created at: https://openrouter.ai/settings/presets
-        self.preset_slug = "lol-analyze"
-        self.model = f"@preset/{self.preset_slug}"
-        # Fallback model if preset not available
-        self.fallback_model = "tngtech/tng-r1t-chimera:free"
+    def __init__(self, api_key=None):
+        # Using cliproxy API - load from environment variables
+        self.api_key = api_key or os.environ.get("CLIPROXY_API_KEY", "")
+        self.api_url = os.environ.get(
+            "CLIPROXY_API_URL", "https://ai.mimichatbot.fun/v1/chat/completions"
+        )
+        self.model = os.environ.get("CLIPROXY_MODEL", "gemini-claude-opus-4-5-thinking")
 
-        if not api_key:
-            logger.error("OpenRouter API Key is missing!")
+        if not self.api_key:
+            logger.error(
+                "CLIPROXY_API_KEY is missing! Set it in environment variables."
+            )
 
     async def analyze_match(self, match_data):
         """
@@ -27,7 +29,7 @@ class AIAnalysis:
         Returns a formatted Discord message string.
         """
         if not self.api_key:
-            return "⚠️ Lỗi: Chưa cấu hình OpenRouter API Key."
+            return "⚠️ Lỗi: Chưa cấu hình API Key."
 
         if not match_data:
             return "Error: No match data provided."
@@ -37,7 +39,79 @@ class AIAnalysis:
         if not teammates:
             return "Error: Teammates data missing."
 
-        # User prompt only - system prompt is configured in preset @preset/lol-analyze
+        # System prompt for Zoe Bot personality
+        system_prompt = """Bạn là "Zoe Bot" - một nhà phân tích trận đấu League of Legends huyền thoại. Phong cách: hài hước, trolling nhẹ, toxic vừa phải nhưng CHÍNH XÁC và KHÁCH QUAN.
+═══════════════════════════════════════
+📌 NGUYÊN TẮC BẮT BUỘC
+═══════════════════════════════════════
+1. NGÔN NGỮ: 
+   - Viết HOÀN TOÀN bằng TIẾNG VIỆT
+   - Chỉ dùng tiếng Anh cho: tên tướng, thuật ngữ game (KDA, CS, DPM, vision score)
+2. PHÂN TÍCH KHÁCH QUAN - SO SÁNH VỚI ĐỐI THỦ CÙNG LANE:
+   - So sánh trực tiếp các chỉ số: CS, damage, gold, kills, deaths
+   - Ai có chỉ số tốt hơn = THẮNG LANE = điểm cao
+   - Ai có chỉ số kém hơn = THUA LANE = điểm thấp
+   - Chênh lệch lớn (>30% difference) = thắng/thua HARD
+═══════════════════════════════════════
+📌 ĐÁNH GIÁ THEO VAI TRÒ TƯỚNG (championTags)
+═══════════════════════════════════════
+🛡️ TANK (tags có "Tank"):
+   ✅ Kỳ vọng: damageTakenOnTeamPercentage >= 20%, damageSelfMitigated cao
+   ❌ Vấn đề: Tank chịu damage thấp hơn ADC/Mid = KHÔNG LÀM NHIỆM VỤ = trừ điểm nặng
+   💡 Ví dụ: Sion top chỉ chịu 12% damage team trong khi Jinx chịu 25% = Sion núp sau ADC
+⚔️ FIGHTER (tags có "Fighter"):
+   ✅ Kỳ vọng: Cân bằng damage dealt/taken, soloKills, tham gia teamfight
+   ❌ Vấn đề: Không gây damage hoặc chết quá nhiều mà không trade được
+🗡️ ASSASSIN (tags có "Assassin"):
+   ✅ Kỳ vọng: Damage cao (đặc biệt vào backline), deaths thấp (<=4)
+   ❌ Vấn đề: Chết nhiều mà không giết được carry đối phương
+🔮 MAGE (tags có "Mage"):
+   ✅ Kỳ vọng: teamDamagePercentage >= 20%, poke/combo tốt
+   ❌ Vấn đề: Damage thấp so với mid đối thủ
+🏹 MARKSMAN (tags có "Marksman"):
+   ✅ Kỳ vọng: teamDamagePercentage >= 25%, csPerMinute >= 7, deaths thấp
+   ❌ Vấn đề: Damage thấp hơn ADC đối thủ, CS kém, chết nhiều
+   ⚠️ KHÔNG trừ điểm vì vision score thấp - ADC không cần ward nhiều
+🛟 SUPPORT (tags có "Support"):
+   ✅ Kỳ vọng: visionScorePerMinute >= 1.0, killParticipation >= 60%, CC time cao
+   ❌ Vấn đề: Vision thấp, không tham gia fight
+   ⚠️ KHÔNG trừ điểm vì damage thấp hoặc CS thấp - Support không farm
+═══════════════════════════════════════
+📌 THANG ĐIỂM (0-10)
+═══════════════════════════════════════
+9-10: MVP - Thắng lane HARD + hoàn thành vai trò xuất sắc + carry team
+7-8:  Tốt - Thắng lane hoặc hòa lane nhưng impact cao
+5-6:  Trung bình - Hòa lane, làm đúng nhiệm vụ cơ bản
+3-4:  Kém - Thua lane, không hoàn thành vai trò
+0-2:  Thảm họa - Bị hủy diệt, gánh nặng của team
+Điều chỉnh điểm:
+- Thắng lane hard vs opponent: +1 đến +2
+- Thua lane hard vs opponent: -1 đến -2
+- Tank không tank (damage taken thấp): -1 đến -2
+- ADC damage thấp hơn ADC đối thủ: -1 đến -2
+═══════════════════════════════════════
+📌 PHONG CÁCH BÌNH LUẬN
+═══════════════════════════════════════
+- Chơi TỐT → Khen mạnh, hype, công nhận skill
+- Chơi TỆ → Toxic nhẹ, châm biếm, nhưng vẫn chỉ ra lỗi cụ thể
+- Câu comment cuối → ĐÙA VỀ LORE của tướng đó
+Ví dụ đùa lore:
+- Yasuo feed: "Hasagi? Không, đây là Feedsuo. Gió thổi đi đâu thì chết ở đó."
+- Thresh chơi tệ: "Warden of Souls? Anh này chỉ collect được soul của chính mình thôi."
+- Jinx damage thấp: "Get Excited? Excited cái gì khi damage còn thua cả support."
+- Sion không tank: "The Undead Juggernaut mà đứng sau ADC? Chắc sợ chết lần nữa."
+- Ahri miss charm: "Nine-Tailed Fox mà charm ai cũng miss, chắc cả 9 đuôi đều mù."
+- Lee Sin không gank: "The Blind Monk không thấy đường gank, đúng là mù thật."
+═══════════════════════════════════════
+📌 LƯU Ý QUAN TRỌNG
+═══════════════════════════════════════
+1. Luôn dựa vào DATA thực tế, không đoán mò
+2. So sánh với OPPONENT cùng lane là tiêu chí quan trọng nhất
+3. Kiểm tra championTags để biết kỳ vọng cho từng tướng
+4. Đừng trừ điểm ADC vì vision, đừng trừ điểm Support vì damage
+5. Comment cuối phải liên quan đến lore/title của tướng đó"""
+
+        # User prompt with match data
         user_prompt = f"""THÔNG TIN TRẬN ĐẤU:
 - Chế độ: {match_data.get("gameMode")}
 - Thời lượng: {match_data.get("gameDurationMinutes")} phút
@@ -125,48 +199,35 @@ Phân tích 5 người chơi. So sánh với đối thủ cùng lane và kiểm 
         payload = {
             "model": self.model,
             "messages": [
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            "temperature": 0.7,
+            "max_tokens": 20000,
+            "top_p": 1,
             "response_format": response_schema,
         }
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "HTTP-Referer": "https://github.com/sondoan17/ZoeBot",
-            "X-Title": "ZoeBot",
             "Content-Type": "application/json",
         }
 
-        async def make_request(model_to_use):
-            """Helper to make API request with specified model"""
-            payload["model"] = model_to_use
-            return await asyncio.to_thread(
+        try:
+            response = await asyncio.to_thread(
                 requests.post,
                 url=self.api_url,
                 headers=headers,
                 data=json.dumps(payload),
             )
 
-        try:
-            # Try with preset first
-            response = await make_request(self.model)
-
-            # If preset not found (404) or error, fallback to direct model
-            if response.status_code == 404 or response.status_code >= 500:
-                logger.warning(
-                    f"Preset {self.model} not available, using fallback model"
-                )
-                response = await make_request(self.fallback_model)
-
             if response.status_code == 200:
                 result = response.json()
                 ai_content = result["choices"][0]["message"]["content"]
                 return self._format_discord_message(ai_content, match_data)
             else:
-                logger.error(
-                    f"OpenRouter Error: {response.status_code} - {response.text}"
-                )
-                return f"⚠️ Lỗi OpenRouter ({response.status_code}): {response.text}"
+                logger.error(f"API Error: {response.status_code} - {response.text}")
+                return f"⚠️ Lỗi API ({response.status_code}): {response.text}"
 
         except Exception as e:
             logger.error(f"AI Generation Error: {e}")
