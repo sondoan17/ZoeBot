@@ -1,10 +1,36 @@
 import requests
 import os
+import json
 import logging
 
 # Basic logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Load champion data for role detection
+def load_champion_data():
+    """Load champion.json to get champion tags (Tank, Fighter, Mage, etc.)"""
+    try:
+        champion_file = os.path.join(os.path.dirname(__file__), 'champion.json')
+        if os.path.exists(champion_file):
+            with open(champion_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('data', {})
+    except Exception as e:
+        logger.error(f"Error loading champion.json: {e}")
+    return {}
+
+CHAMPION_DATA = load_champion_data()
+
+def get_champion_info(champion_name):
+    """Get champion tags and stats from champion.json"""
+    champ = CHAMPION_DATA.get(champion_name, {})
+    return {
+        'tags': champ.get('tags', []),  # e.g., ["Tank", "Fighter"]
+        'defense': champ.get('info', {}).get('defense', 5),  # 1-10 scale
+        'attack': champ.get('info', {}).get('attack', 5),
+        'magic': champ.get('info', {}).get('magic', 5),
+    }
 
 class RiotAPI:
     def __init__(self, api_key):
@@ -58,7 +84,7 @@ class RiotAPI:
     def parse_match_data(self, full_data, target_puuid):
         """
         Filter and extract comprehensive data for AI analysis.
-        Returns only the 5 teammates (including target) pre-filtered.
+        Returns teammates and their lane opponents for comparison.
         """
         if not full_data or 'info' not in full_data:
             return None
@@ -72,6 +98,7 @@ class RiotAPI:
         target_player = None
         target_team_id = None
         participants_data = []
+        enemies_data = []
         
         participants = info.get('participants', [])
         
@@ -84,17 +111,17 @@ class RiotAPI:
             logger.warning("Target player not found in match participants")
             return None
         
-        # Extract comprehensive data for teammates only
-        for p in participants:
-            if p.get('teamId') != target_team_id:
-                continue
-            
+        def extract_player_data(p):
+            """Helper function to extract player data"""
             challenges = p.get('challenges', {})
+            champion_name = p.get('championName', '')
+            champ_info = get_champion_info(champion_name)
             
-            # Build comprehensive player data
-            p_data = {
+            return {
                 # Identity
-                'championName': p.get('championName'),
+                'championName': champion_name,
+                'championTags': champ_info['tags'],  # ["Tank", "Fighter"] etc.
+                'championDefense': champ_info['defense'],  # 1-10 scale
                 'riotIdGameName': p.get('riotIdGameName'),
                 'teamPosition': p.get('teamPosition'),
                 'individualPosition': p.get('individualPosition'),
@@ -105,62 +132,72 @@ class RiotAPI:
                 'deaths': p.get('deaths'),
                 'assists': p.get('assists'),
                 'kda': round(challenges.get('kda', 0), 2),
-                'killParticipation': round(challenges.get('killParticipation', 0) * 100, 1),  # Convert to %
+                'killParticipation': round(challenges.get('killParticipation', 0) * 100, 1),
                 'takedowns': challenges.get('takedowns', 0),
                 'largestKillingSpree': p.get('largestKillingSpree', 0),
                 'soloKills': challenges.get('soloKills', 0),
                 'timeSpentDead': p.get('totalTimeSpentDead', 0),
                 
-                # 2. Damage Profile
+                # 2. Damage Dealt
                 'totalDamageDealtToChampions': p.get('totalDamageDealtToChampions', 0),
                 'damagePerMinute': round(challenges.get('damagePerMinute', 0), 0),
-                'teamDamagePercentage': round(challenges.get('teamDamagePercentage', 0) * 100, 1),  # %
-                'physicalDamageDealtToChampions': p.get('physicalDamageDealtToChampions', 0),
-                'magicDamageDealtToChampions': p.get('magicDamageDealtToChampions', 0),
-                'trueDamageDealtToChampions': p.get('trueDamageDealtToChampions', 0),
+                'teamDamagePercentage': round(challenges.get('teamDamagePercentage', 0) * 100, 1),
                 'timeCCingOthers': p.get('timeCCingOthers', 0),
-                'totalTimeCCDealt': p.get('totalTimeCCDealt', 0),
                 
-                # 3. Laning & Economy
+                # 3. Damage Taken (IMPORTANT for Tanks)
+                'totalDamageTaken': p.get('totalDamageTaken', 0),
+                'damageTakenOnTeamPercentage': round(challenges.get('damageTakenOnTeamPercentage', 0) * 100, 1),
+                'damageSelfMitigated': p.get('damageSelfMitigated', 0),
+                
+                # 4. Laning & Economy
                 'laneMinionsFirst10Minutes': challenges.get('laneMinionsFirst10Minutes', 0),
                 'totalCS': p.get('totalMinionsKilled', 0) + p.get('neutralMinionsKilled', 0),
                 'csPerMinute': round((p.get('totalMinionsKilled', 0) + p.get('neutralMinionsKilled', 0)) / game_duration_minutes, 1),
                 'goldEarned': p.get('goldEarned', 0),
                 'goldPerMinute': round(challenges.get('goldPerMinute', 0), 0),
                 'champLevel': p.get('champLevel', 0),
-                'maxCsAdvantageOnLaneOpponent': round(challenges.get('maxCsAdvantageOnLaneOpponent', 0), 0),
-                'maxLevelLeadLaneOpponent': challenges.get('maxLevelLeadLaneOpponent', 0),
                 
-                # 4. Macro & Objectives
-                'dragonKills': p.get('dragonKills', 0),
+                # 5. Macro & Objectives
                 'dragonTakedowns': challenges.get('dragonTakedowns', 0),
-                'baronKills': p.get('baronKills', 0),
                 'baronTakedowns': challenges.get('baronTakedowns', 0),
                 'damageDealtToObjectives': p.get('damageDealtToObjectives', 0),
                 'turretTakedowns': challenges.get('turretTakedowns', 0),
-                'inhibitorTakedowns': p.get('inhibitorTakedowns', 0),
-                'teamBaronKills': challenges.get('teamBaronKills', 0),
-                'teamElderDragonKills': challenges.get('teamElderDragonKills', 0),
                 
-                # 5. Vision Control
+                # 6. Vision Control
                 'visionScore': p.get('visionScore', 0),
                 'visionScorePerMinute': round(challenges.get('visionScorePerMinute', 0), 2),
                 'wardsPlaced': p.get('wardsPlaced', 0),
                 'controlWardsPlaced': challenges.get('controlWardsPlaced', 0),
                 'wardsKilled': p.get('wardsKilled', 0),
-                'wardTakedowns': challenges.get('wardTakedowns', 0),
-                
-                # 6. Mechanics
-                'skillshotsHit': challenges.get('skillshotsHit', 0),
-                'skillshotsDodged': challenges.get('skillshotsDodged', 0),
-                'abilityUses': challenges.get('abilityUses', 0),
-                'dodgeSkillShotsSmallWindow': challenges.get('dodgeSkillShotsSmallWindow', 0),
             }
-
-            participants_data.append(p_data)
+        
+        # Extract data for both teams
+        for p in participants:
+            p_data = extract_player_data(p)
             
-            if p.get('puuid') == target_puuid:
-                target_player = p_data
+            if p.get('teamId') == target_team_id:
+                participants_data.append(p_data)
+                if p.get('puuid') == target_puuid:
+                    target_player = p_data
+            else:
+                enemies_data.append(p_data)
+        
+        # Match lane opponents
+        position_map = {'TOP': 'TOP', 'JUNGLE': 'JUNGLE', 'MIDDLE': 'MIDDLE', 'BOTTOM': 'BOTTOM', 'UTILITY': 'UTILITY'}
+        lane_matchups = []
+        
+        for teammate in participants_data:
+            pos = teammate.get('teamPosition', '')
+            opponent = None
+            for enemy in enemies_data:
+                if enemy.get('teamPosition', '') == pos:
+                    opponent = enemy
+                    break
+            
+            lane_matchups.append({
+                'player': teammate,
+                'opponent': opponent
+            })
 
         return {
             'matchId': full_data.get('metadata', {}).get('matchId'),
@@ -169,5 +206,6 @@ class RiotAPI:
             'gameMode': game_mode,
             'win': target_player.get('win') if target_player else None,
             'target_player_name': target_player.get('riotIdGameName') if target_player else None,
-            'teammates': participants_data
+            'teammates': participants_data,
+            'lane_matchups': lane_matchups
         }
