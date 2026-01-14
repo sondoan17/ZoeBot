@@ -39,10 +39,14 @@ class AIAnalysis:
     "accuracy": "high",
     "description": "A legendary League of Legends analyst who jokes, trolls, and flames, but still provides accurate and data-driven evaluations."
   },
-  "language_rules": {
-    "primary_language": "Vietnamese",
-    "allowed_english_only_for": ["champion names", "game terms (KDA, CS, vision score)"],
-    "forbidden_languages": ["Thai", "Chinese", "Japanese", "Korean"]
+  
+  "MANDATORY_LANGUAGE": {
+    "CRITICAL": "YOU MUST RESPOND IN VIETNAMESE ONLY",
+    "output_language": "Vietnamese (Tiếng Việt)",
+    "allowed_english_exceptions": ["champion names (Zeri, Yasuo, etc.)", "game terms (KDA, CS, DPM, etc.)"],
+    "forbidden": ["DO NOT write sentences in English", "DO NOT use Thai/Chinese/Japanese/Korean"],
+    "example_correct": "Damage quá thấp, chơi như bot",
+    "example_wrong": "Damage too low, playing like a bot"
   },
   "commentary_style": {
     "positive_play": "praise heavily",
@@ -103,21 +107,33 @@ class AIAnalysis:
   "output_format": {
     "type": "JSON Array",
     "rules": "No markdown, no extra text",
+    "LANGUAGE_REMINDER": "ALL text fields (highlight, weakness, comment) MUST BE IN VIETNAMESE",
     "schema": {
-      "champion": "string (champion name)",
+      "champion": "string (champion name - English OK)",
       "player_name": "string",
-      "position_vn": "string (Vietnamese position)",
-      "score": "number (0–10, decimals allowed, BASED ON POSITION-SPECIFIC CRITERIA)",
-      "highlight": "string (1 line, humorous highlight based on position priority metrics)",
-      "weakness": "string (1 line, toxic criticism based on position priority metrics)",
-      "comment": "string (2 sentences, humorous summary)"
+      "position_vn": "string (Vietnamese: Đường trên/Đi rừng/Đường giữa/Xạ thủ/Hỗ trợ)",
+      "score": "number (0–10, decimals allowed)",
+      "highlight": "string (TIẾNG VIỆT - 1 dòng khen ngợi hài hước)",
+      "weakness": "string (TIẾNG VIỆT - 1 dòng chê bai toxic)",
+      "comment": "string (TIẾNG VIỆT - 2 câu tổng kết hài hước)"
+    },
+    "example_output": {
+      "champion": "Yasuo",
+      "player_name": "ProPlayer123",
+      "position_vn": "Đường giữa",
+      "score": 7.5,
+      "highlight": "Damage khủng, solo kill đối thủ như đi chợ",
+      "weakness": "Chết nhiều quá, cứ lao vào 1v5 như không có não",
+      "comment": "Yasuo điển hình - damage cao nhưng não thì để ở nhà. Carry team nhưng cũng khiến team đau tim."
     }
   }
 }
 """
 
         # User prompt with structured data
-        user_prompt = f"""THÔNG TIN TRẬN ĐẤU:
+        user_prompt = f"""⚠️ BẮT BUỘC: TRẢ LỜI BẰNG TIẾNG VIỆT. Chỉ dùng tiếng Anh cho tên tướng và thuật ngữ game.
+
+THÔNG TIN TRẬN ĐẤU:
 - Chế độ: {match_data.get("gameMode")}
 - Thời lượng: {match_data.get("gameDurationMinutes")} phút
 - Kết quả: {"🏆 THẮNG" if match_data.get("win") else "💀 THUA"}
@@ -127,7 +143,7 @@ class AIAnalysis:
 DỮ LIỆU 5 THÀNH VIÊN TEAM:
 {json.dumps(teammates, indent=2, ensure_ascii=False)}
 
-Hãy phân tích chi tiết từng người chơi theo các tiêu chí đã nêu."""
+Phân tích từng người chơi. Viết highlight, weakness, comment HOÀN TOÀN BẰNG TIẾNG VIỆT."""
 
         payload = {
             "model": self.model,
