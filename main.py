@@ -147,8 +147,11 @@ async def analyze(ctx, *, riot_id: str):
         )
 
         match_details = riot_client.get_match_details(last_match_id)
+        timeline_data = riot_client.get_match_timeline(last_match_id)
         if match_details:
-            filtered_data = riot_client.parse_match_data(match_details, puuid)
+            filtered_data = riot_client.parse_match_data(
+                match_details, puuid, timeline_data
+            )
             if filtered_data:
                 analysis = await ai_client.analyze_match(filtered_data)
                 if len(analysis) > 2000:
@@ -202,9 +205,10 @@ async def check_matches():
                     )
 
                     match_details = riot_client.get_match_details(latest_match_id)
+                    timeline_data = riot_client.get_match_timeline(latest_match_id)
                     if match_details:
                         filtered_data = riot_client.parse_match_data(
-                            match_details, puuid
+                            match_details, puuid, timeline_data
                         )
                         if filtered_data:
                             analysis = await ai_client.analyze_match(filtered_data)
