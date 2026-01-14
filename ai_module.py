@@ -11,7 +11,7 @@ class AIAnalysis:
     def __init__(self, api_key):
         self.api_key = api_key
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.model = "nvidia/nemotron-3-nano-30b-a3b:free"
+        self.model = "xiaomi/mimo-v2-flash:free"
 
         if not api_key:
             logger.error("OpenRouter API Key is missing!")
