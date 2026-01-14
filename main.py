@@ -83,6 +83,10 @@ def save_tracked_players():
 # Format: {puuid: {'last_match_id': str, 'channel_id': int, 'name': str}}
 tracked_players = load_tracked_players()
 
+# Cache to prevent duplicate analysis when multiple tracked players are in same match
+# Format: {"match_id": [channel_ids that received analysis]}
+analyzed_matches: dict[str, list[int]] = {}
+
 
 @bot.event
 async def on_ready():
@@ -95,6 +99,28 @@ async def on_ready():
 @bot.command()
 async def ping(ctx):
     await ctx.send("Pong!")
+
+
+@bot.command(name="list", aliases=["ls", "danhsach"])
+async def list_players(ctx):
+    """
+    Show all tracked players in this channel. Format: !list
+    """
+    channel_players = [
+        data["name"]
+        for puuid, data in tracked_players.items()
+        if data["channel_id"] == ctx.channel.id
+    ]
+
+    if not channel_players:
+        await ctx.send(
+            "📋 Chưa theo dõi người chơi nào trong kênh này.\nDùng `!track Name#Tag` để bắt đầu."
+        )
+    else:
+        player_list = "\n".join(f"• **{name}**" for name in channel_players)
+        await ctx.send(
+            f"📋 **Đang theo dõi ({len(channel_players)} người):**\n{player_list}"
+        )
 
 
 @bot.command()
@@ -249,6 +275,7 @@ async def check_matches():
             if latest_match_id != old_match_id:
                 # Update first to prevent spam if processing fails
                 tracked_players[puuid]["last_match_id"] = latest_match_id
+                save_tracked_players()
 
                 if old_match_id is None:
                     # First run/init, just update
@@ -257,15 +284,32 @@ async def check_matches():
 
                 print(f"🆕 New match found for {data['name']}: {latest_match_id}")
 
-                # Fetch details
+                # Check if this match was already analyzed for this channel
                 channel_id = data["channel_id"]
+                if latest_match_id in analyzed_matches:
+                    if channel_id in analyzed_matches[latest_match_id]:
+                        print(
+                            f"⏭️ Match {latest_match_id} already analyzed for channel {channel_id}"
+                        )
+                        continue
+
+                # Fetch channel
                 channel = bot.get_channel(channel_id)
                 if not channel:
                     print(f"⚠️ Channel {channel_id} not found for {data['name']}")
                     continue
 
+                # Find all tracked players in this match for this channel
+                players_in_match = [
+                    p_data["name"]
+                    for p_puuid, p_data in tracked_players.items()
+                    if p_data["channel_id"] == channel_id
+                    and p_data["last_match_id"] == latest_match_id
+                ]
+
+                players_mention = ", ".join(f"**{name}**" for name in players_in_match)
                 await channel.send(
-                    f"🚨 **TRẬN MỚI:** {data['name']} vừa chơi xong trận `{latest_match_id}`!\n⏳ Đang phân tích..."
+                    f"🚨 **TRẬN MỚI:** {players_mention} vừa chơi xong trận `{latest_match_id}`!\n⏳ Đang phân tích..."
                 )
 
                 # Fetch match details and timeline
@@ -294,7 +338,17 @@ async def check_matches():
                     else:
                         await channel.send(analysis)
 
-                    print(f"✅ Analysis sent for {data['name']}")
+                    # Mark match as analyzed for this channel
+                    if latest_match_id not in analyzed_matches:
+                        analyzed_matches[latest_match_id] = []
+                    analyzed_matches[latest_match_id].append(channel_id)
+
+                    # Cleanup old entries (keep last 50 matches)
+                    if len(analyzed_matches) > 50:
+                        oldest_key = next(iter(analyzed_matches))
+                        del analyzed_matches[oldest_key]
+
+                    print(f"✅ Analysis sent for {players_mention}")
 
                 except Exception as ai_error:
                     print(f"❌ AI Error for {data['name']}: {ai_error}")
