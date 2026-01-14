@@ -1,11 +1,12 @@
 import os
+import json
+import requests
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from riot_module import RiotAPI
 from ai_module import AIAnalysis
 from keep_alive import keep_alive
-import asyncio
 
 
 # Load environment variables
@@ -13,6 +14,11 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 RIOT_API_KEY = os.getenv("RIOT_API_KEY")
+
+# Upstash Redis configuration
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+REDIS_KEY = "zoebot:tracked_players"
 
 # Bot setup
 intents = discord.Intents.default()
@@ -22,9 +28,60 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 riot_client = RiotAPI(RIOT_API_KEY)
 ai_client = AIAnalysis()  # Will load CLIPROXY_API_KEY from environment
 
-# Tracking Data (In-memory for now)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UPSTASH REDIS PERSISTENCE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def redis_request(command: list) -> dict | None:
+    """Make a request to Upstash Redis REST API."""
+    if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+        print("⚠️ Upstash Redis not configured, using in-memory storage")
+        return None
+
+    try:
+        response = requests.post(
+            UPSTASH_REDIS_REST_URL,
+            headers={"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"},
+            json=command,
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"⚠️ Redis error: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"⚠️ Redis request failed: {e}")
+        return None
+
+
+def load_tracked_players() -> dict:
+    """Load tracked players from Upstash Redis."""
+    result = redis_request(["GET", REDIS_KEY])
+    if result and result.get("result"):
+        try:
+            data = json.loads(result["result"])
+            print(f"📂 Loaded {len(data)} tracked players from Redis")
+            return data
+        except json.JSONDecodeError:
+            print("⚠️ Failed to parse Redis data")
+    return {}
+
+
+def save_tracked_players():
+    """Save tracked players to Upstash Redis."""
+    result = redis_request(["SET", REDIS_KEY, json.dumps(tracked_players)])
+    if result and result.get("result") == "OK":
+        print(f"💾 Saved {len(tracked_players)} tracked players to Redis")
+    else:
+        print("⚠️ Failed to save to Redis")
+
+
+# Tracking Data - Load from Redis on startup
 # Format: {puuid: {'last_match_id': str, 'channel_id': int, 'name': str}}
-tracked_players = {}
+tracked_players = load_tracked_players()
 
 
 @bot.event
@@ -70,6 +127,7 @@ async def track(ctx, *, riot_id: str):
             "channel_id": ctx.channel.id,
             "name": riot_id,
         }
+        save_tracked_players()  # Persist to file
 
         await ctx.send(
             f"✅ Đã thêm **{riot_id}** vào danh sách theo dõi!\nBot sẽ thông báo khi có trận mới."
@@ -99,6 +157,7 @@ async def untrack(ctx, *, riot_id: str):
 
         if puuid and puuid in tracked_players:
             del tracked_players[puuid]
+            save_tracked_players()  # Persist to file
             await ctx.send(f"✅ Đã huỷ theo dõi **{riot_id}**.")
             print(f"Untracked: {riot_id} (PUUID: {puuid})")
         else:
@@ -175,11 +234,12 @@ async def check_matches():
 
     print(f"🔄 Checking matches for {len(tracked_players)} players...")
 
-    # Iterate copy of items to avoid modification issues during iteration (though here we just modify values)
-    for puuid, data in tracked_players.items():
+    # Iterate copy of items to avoid modification issues during iteration
+    for puuid, data in list(tracked_players.items()):
         try:
             matches = riot_client.get_match_ids_by_puuid(puuid, count=1)
             if not matches:
+                print(f"⚠️ No matches found for {data['name']}")
                 continue
 
             latest_match_id = matches[0]
@@ -192,6 +252,7 @@ async def check_matches():
 
                 if old_match_id is None:
                     # First run/init, just update
+                    print(f"📝 Initialized {data['name']} with match {latest_match_id}")
                     continue
 
                 print(f"🆕 New match found for {data['name']}: {latest_match_id}")
@@ -199,27 +260,57 @@ async def check_matches():
                 # Fetch details
                 channel_id = data["channel_id"]
                 channel = bot.get_channel(channel_id)
-                if channel:
-                    await channel.send(
-                        f"🚨 **TRẬN MỚI:** {data['name']} vừa chơi xong trận {latest_match_id}!\n⏳ Đang phân tích..."
-                    )
+                if not channel:
+                    print(f"⚠️ Channel {channel_id} not found for {data['name']}")
+                    continue
 
-                    match_details = riot_client.get_match_details(latest_match_id)
-                    timeline_data = riot_client.get_match_timeline(latest_match_id)
-                    if match_details:
-                        filtered_data = riot_client.parse_match_data(
-                            match_details, puuid, timeline_data
-                        )
-                        if filtered_data:
-                            analysis = await ai_client.analyze_match(filtered_data)
-                            await channel.send(analysis)
-                        else:
-                            await channel.send(
-                                "⚠️ Không thể lấy dữ liệu chi tiết của trận đấu."
-                            )
+                await channel.send(
+                    f"🚨 **TRẬN MỚI:** {data['name']} vừa chơi xong trận `{latest_match_id}`!\n⏳ Đang phân tích..."
+                )
+
+                # Fetch match details and timeline
+                match_details = riot_client.get_match_details(latest_match_id)
+                if not match_details:
+                    await channel.send("⚠️ Không thể lấy dữ liệu trận đấu từ Riot API.")
+                    continue
+
+                timeline_data = riot_client.get_match_timeline(latest_match_id)
+
+                filtered_data = riot_client.parse_match_data(
+                    match_details, puuid, timeline_data
+                )
+                if not filtered_data:
+                    await channel.send("⚠️ Không thể xử lý dữ liệu trận đấu.")
+                    continue
+
+                # Get AI analysis
+                try:
+                    analysis = await ai_client.analyze_match(filtered_data)
+
+                    # Handle long messages (Discord limit is 2000 chars)
+                    if len(analysis) > 2000:
+                        for i in range(0, len(analysis), 2000):
+                            await channel.send(analysis[i : i + 2000])
+                    else:
+                        await channel.send(analysis)
+
+                    print(f"✅ Analysis sent for {data['name']}")
+
+                except Exception as ai_error:
+                    print(f"❌ AI Error for {data['name']}: {ai_error}")
+                    await channel.send(f"⚠️ Lỗi AI: {str(ai_error)[:200]}")
 
         except Exception as e:
-            print(f"Error checking {puuid}: {e}")
+            print(f"❌ Error checking {data.get('name', puuid)}: {e}")
+            # Try to notify channel about error
+            try:
+                channel = bot.get_channel(data.get("channel_id"))
+                if channel:
+                    await channel.send(
+                        f"⚠️ Lỗi khi kiểm tra trận của {data.get('name')}: {str(e)[:100]}"
+                    )
+            except Exception:
+                pass  # Ignore errors when notifying about errors
 
 
 @check_matches.before_loop
