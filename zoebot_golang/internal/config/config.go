@@ -25,9 +25,8 @@ type Config struct {
 	AIAPIURL string
 	AIModel  string
 
-	// Redis (Upstash)
-	UpstashRedisRESTURL   string
-	UpstashRedisRESTToken string
+	// Redis
+	RedisURL               string
 	RedisKeyTrackedPlayers string
 
 	// Data Dragon
@@ -57,9 +56,8 @@ func Load() (*Config, error) {
 		AIAPIURL: os.Getenv("CLIPROXY_API_URL"),
 		AIModel:  os.Getenv("CLIPROXY_MODEL"),
 
-		// Redis (Upstash)
-		UpstashRedisRESTURL:    os.Getenv("UPSTASH_REDIS_REST_URL"),
-		UpstashRedisRESTToken:  os.Getenv("UPSTASH_REDIS_REST_TOKEN"),
+		// Redis
+		RedisURL:               os.Getenv("REDIS_URL"),
 		RedisKeyTrackedPlayers: getEnvOrDefault("REDIS_KEY_TRACKED_PLAYERS", "zoebot:tracked_players"),
 
 		// Data Dragon

@@ -2,15 +2,13 @@
 package storage
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/zoebot/internal/config"
 )
 
@@ -22,121 +20,77 @@ type TrackedPlayer struct {
 	Name        string `json:"name"`
 }
 
-// RedisClient is a client for Upstash Redis REST API.
+// RedisClient wraps go-redis client.
 type RedisClient struct {
-	url     string
-	token   string
+	client  *redis.Client
 	enabled bool
-	client  *http.Client
-	mu      sync.RWMutex
+	ctx     context.Context
 }
 
-// NewRedisClient creates a new Redis client.
-// Optimized: shorter timeout, connection reuse
+// NewRedisClient creates a new Redis client using go-redis.
 func NewRedisClient(cfg *config.Config) *RedisClient {
-	enabled := cfg.UpstashRedisRESTURL != "" && cfg.UpstashRedisRESTToken != ""
-
-	if !enabled {
-		log.Println("Redis not configured, using memory")
+	redisURL := cfg.RedisURL
+	if redisURL == "" {
+		log.Println("Redis not configured (REDIS_URL missing), using memory only")
+		return &RedisClient{enabled: false, ctx: context.Background()}
 	}
 
-	transport := &http.Transport{
-		MaxIdleConns:        3,
-		MaxIdleConnsPerHost: 2,
-		IdleConnTimeout:     60 * time.Second,
+	opt, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Printf("Failed to parse REDIS_URL: %v", err)
+		return &RedisClient{enabled: false, ctx: context.Background()}
 	}
 
+	// Optimize for serverless
+	opt.PoolSize = 5
+	opt.MinIdleConns = 1
+	opt.DialTimeout = 5 * time.Second
+	opt.ReadTimeout = 3 * time.Second
+	opt.WriteTimeout = 3 * time.Second
+
+	client := redis.NewClient(opt)
+	ctx := context.Background()
+
+	// Test connection
+	if err := client.Ping(ctx).Err(); err != nil {
+		log.Printf("Redis connection failed: %v", err)
+		return &RedisClient{enabled: false, ctx: ctx}
+	}
+
+	log.Println("Redis connected successfully")
 	return &RedisClient{
-		url:     cfg.UpstashRedisRESTURL,
-		token:   cfg.UpstashRedisRESTToken,
-		enabled: enabled,
-		client: &http.Client{
-			Timeout:   5 * time.Second,
-			Transport: transport,
-		},
+		client:  client,
+		enabled: true,
+		ctx:     ctx,
 	}
-}
-
-// redisResponse represents the response from Upstash REST API.
-type redisResponse struct {
-	Result interface{} `json:"result"`
-	Error  string      `json:"error,omitempty"`
-}
-
-// request makes a request to Upstash Redis REST API.
-func (r *RedisClient) request(command []interface{}) (*redisResponse, error) {
-	if !r.enabled {
-		return nil, nil
-	}
-
-	body, err := json.Marshal(command)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal command: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", r.url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+r.token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("redis error: %d - %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	var result redisResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &result, nil
 }
 
 // Get retrieves a value from Redis.
 func (r *RedisClient) Get(key string) (string, error) {
-	result, err := r.request([]interface{}{"GET", key})
-	if err != nil {
-		return "", err
-	}
-	if result == nil || result.Result == nil {
+	if !r.enabled {
 		return "", nil
 	}
-
-	str, ok := result.Result.(string)
-	if !ok {
+	val, err := r.client.Get(r.ctx, key).Result()
+	if err == redis.Nil {
 		return "", nil
 	}
-	return str, nil
+	return val, err
 }
 
-// Set stores a value in Redis.
+// Set stores a value in Redis (no expiration).
 func (r *RedisClient) Set(key string, value string) error {
-	result, err := r.request([]interface{}{"SET", key, value})
-	if err != nil {
-		return err
-	}
-	if result == nil {
+	if !r.enabled {
 		return nil
 	}
-	if result.Result != "OK" {
-		return fmt.Errorf("set failed: %v", result.Result)
-	}
-	return nil
+	return r.client.Set(r.ctx, key, value, 0).Err()
 }
 
 // Delete removes a key from Redis.
 func (r *RedisClient) Delete(key string) error {
-	_, err := r.request([]interface{}{"DEL", key})
-	return err
+	if !r.enabled {
+		return nil
+	}
+	return r.client.Del(r.ctx, key).Err()
 }
 
 // TrackedPlayersStore manages tracked players persistence.
