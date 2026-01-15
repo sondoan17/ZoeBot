@@ -48,6 +48,7 @@ func main() {
 	log.SetFlags(log.Ltime)
 	log.SetOutput(os.Stdout)
 	log.Println("Starting ZoeBot...")
+	log.Println("VERSION DEBUG: WITH REDIS LOGS AND FMT FIX")
 
 	// Load configuration
 	cfg, err := config.Load()
