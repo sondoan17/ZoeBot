@@ -13,6 +13,7 @@ import (
 	"github.com/zoebot/internal/embeds"
 	"github.com/zoebot/internal/services/ai"
 	"github.com/zoebot/internal/services/riot"
+	"github.com/zoebot/internal/services/scraper"
 	"github.com/zoebot/internal/storage"
 )
 
@@ -28,6 +29,7 @@ type Bot struct {
 	cfg             *config.Config
 	riotClient      *riot.Client
 	aiClient        *ai.Client
+	scraperClient   *scraper.Client
 	trackedPlayers  *storage.TrackedPlayersStore
 	analyzedMatches map[string][]string       // matchID -> []channelID
 	analysisCache   map[string]*AnalysisCache // matchID -> analysis result
@@ -61,6 +63,7 @@ func New(cfg *config.Config) (*Bot, error) {
 		cfg:             cfg,
 		riotClient:      riot.NewClient(cfg, redisClient),
 		aiClient:        ai.NewClient(cfg),
+		scraperClient:   scraper.NewClient(redisClient),
 		trackedPlayers:  trackedPlayers,
 		analyzedMatches: make(map[string][]string),
 		analysisCache:   make(map[string]*AnalysisCache),
@@ -152,6 +155,24 @@ func (b *Bot) registerCommands() error {
 				},
 			},
 		},
+		{
+			Name:        "counter",
+			Description: "Tìm tướng khắc chế (Winrate & Tips)",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "champion",
+					Description: "Tên tướng cần khắc chế (VD: Yasuo)",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "lane",
+					Description: "Đường/Vị trí (top, jungle, mid, adc, support)",
+					Required:    false,
+				},
+			},
+		},
 	}
 
 	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))
@@ -185,6 +206,8 @@ func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.Interaction
 			b.handleList(s, i)
 		case "analyze":
 			b.handleAnalyze(s, i)
+		case "counter":
+			b.handleCounter(s, i)
 		}
 	} else if i.Type == discordgo.InteractionMessageComponent {
 		log.Printf("MessageComponent interaction detected")
