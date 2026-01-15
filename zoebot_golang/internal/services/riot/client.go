@@ -11,9 +11,11 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zoebot/internal/config"
+	"github.com/zoebot/internal/storage"
 )
 
 // Client is a client for Riot Games API.
@@ -23,11 +25,12 @@ type Client struct {
 	baseURLMatch   string
 	httpClient     *http.Client
 	championData   map[string]ChampionInfo
+	redisClient    *storage.RedisClient
 }
 
 // NewClient creates a new Riot API client.
 // Optimized: shorter timeout, connection reuse
-func NewClient(cfg *config.Config) *Client {
+func NewClient(cfg *config.Config, redisClient *storage.RedisClient) *Client {
 	// Reuse connections for efficiency
 	transport := &http.Transport{
 		MaxIdleConns:        10,
@@ -45,6 +48,7 @@ func NewClient(cfg *config.Config) *Client {
 			Transport: transport,
 		},
 		championData: make(map[string]ChampionInfo),
+		redisClient:  redisClient,
 	}
 
 	// Load champion data
@@ -101,7 +105,19 @@ func (c *Client) doRequest(reqURL string) ([]byte, error) {
 }
 
 // GetPUUIDByRiotID gets PUUID from Riot ID (Name#Tag).
+// Uses Redis cache to avoid repeated API calls.
 func (c *Client) GetPUUIDByRiotID(gameName, tagLine string) (string, error) {
+	// Create cache key (lowercase for consistency)
+	cacheKey := fmt.Sprintf("puuid:%s#%s", strings.ToLower(gameName), strings.ToLower(tagLine))
+
+	// Check cache first
+	if c.redisClient != nil {
+		if cached, err := c.redisClient.Get(cacheKey); err == nil && cached != "" {
+			log.Printf("PUUID cache hit for %s#%s", gameName, tagLine)
+			return cached, nil
+		}
+	}
+
 	reqURL := fmt.Sprintf("%s/riot/account/v1/accounts/by-riot-id/%s/%s",
 		c.baseURLAccount,
 		url.PathEscape(gameName),
@@ -117,6 +133,15 @@ func (c *Client) GetPUUIDByRiotID(gameName, tagLine string) (string, error) {
 	var resp AccountResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Save to cache (permanent storage)
+	if c.redisClient != nil && resp.PUUID != "" {
+		if err := c.redisClient.Set(cacheKey, resp.PUUID); err != nil {
+			log.Printf("Failed to cache PUUID: %v", err)
+		} else {
+			log.Printf("PUUID cached for %s#%s", gameName, tagLine)
+		}
 	}
 
 	return resp.PUUID, nil

@@ -59,7 +59,7 @@ func New(cfg *config.Config) (*Bot, error) {
 	bot := &Bot{
 		session:         session,
 		cfg:             cfg,
-		riotClient:      riot.NewClient(cfg),
+		riotClient:      riot.NewClient(cfg, redisClient),
 		aiClient:        ai.NewClient(cfg),
 		trackedPlayers:  trackedPlayers,
 		analyzedMatches: make(map[string][]string),
@@ -561,18 +561,22 @@ func (b *Bot) handleDetailButton(s *discordgo.Session, i *discordgo.InteractionC
 	log.Printf("handleDetailButton called with customID: %s", customID)
 
 	// Parse customID: detail_matchID_puuid or full_matchID_puuid
-	var matchID string
+	var remainder string
 	if strings.HasPrefix(customID, "detail_") {
-		matchID = strings.TrimPrefix(customID, "detail_")
+		remainder = strings.TrimPrefix(customID, "detail_")
 	} else {
-		matchID = strings.TrimPrefix(customID, "full_")
+		remainder = strings.TrimPrefix(customID, "full_")
 	}
 
-	// Remove puuid suffix (format: VN2_xxx_puuid)
-	parts := strings.Split(matchID, "_")
-	if len(parts) >= 2 {
-		// Reconstruct matchID (VN2_xxx format)
-		matchID = parts[0] + "_" + parts[1]
+	// Format: VN2_123456789_puuid
+	// matchID is "VN2_123456789", puuid is after the last underscore
+	// Find the last underscore to separate matchID from puuid
+	lastUnderscoreIdx := strings.LastIndex(remainder, "_")
+	var matchID string
+	if lastUnderscoreIdx > 0 {
+		matchID = remainder[:lastUnderscoreIdx]
+	} else {
+		matchID = remainder
 	}
 
 	log.Printf("Looking up cache for matchID: %s", matchID)
