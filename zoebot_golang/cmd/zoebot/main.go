@@ -44,8 +44,9 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Minimal logging
+	// Minimal logging - write directly to stdout for Docker
 	log.SetFlags(log.Ltime)
+	log.SetOutput(os.Stdout)
 	log.Println("Starting ZoeBot...")
 
 	// Load configuration
