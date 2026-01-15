@@ -135,12 +135,20 @@ func (c *Client) GetPUUIDByRiotID(gameName, tagLine string) (string, error) {
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Save to cache (permanent storage)
-	if c.redisClient != nil && resp.PUUID != "" {
-		if err := c.redisClient.Set(cacheKey, resp.PUUID); err != nil {
-			log.Printf("Failed to cache PUUID: %v", err)
+	// DEBUG LOGS
+	if c.redisClient == nil {
+		log.Println("DEBUG: redisClient is nil")
+	} else {
+		log.Printf("DEBUG: redisClient is set. Saving PUUID %s to key %s", resp.PUUID, cacheKey)
+		// Save to cache (permanent storage)
+		if resp.PUUID != "" {
+			if err := c.redisClient.Set(cacheKey, resp.PUUID); err != nil {
+				log.Printf("ERROR: Failed to cache PUUID: %v", err)
+			} else {
+				log.Printf("SUCCESS: PUUID cached for %s#%s", gameName, tagLine)
+			}
 		} else {
-			log.Printf("PUUID cached for %s#%s", gameName, tagLine)
+			log.Println("DEBUG: PUUID is empty, skipping cache")
 		}
 	}
 
