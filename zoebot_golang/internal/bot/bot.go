@@ -171,6 +171,8 @@ func (b *Bot) registerCommands() error {
 
 // onInteractionCreate handles slash command interactions.
 func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	log.Printf("Interaction received: Type=%d", i.Type)
+	
 	if i.Type == discordgo.InteractionApplicationCommand {
 		switch i.ApplicationCommandData().Name {
 		case "ping":
@@ -185,6 +187,7 @@ func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.Interaction
 			b.handleAnalyze(s, i)
 		}
 	} else if i.Type == discordgo.InteractionMessageComponent {
+		log.Printf("MessageComponent interaction detected")
 		b.handleComponentInteraction(s, i)
 	}
 }
