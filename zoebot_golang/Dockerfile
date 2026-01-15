@@ -6,16 +6,13 @@ WORKDIR /app
 # Install certificates and timezone data
 RUN apk add --no-cache ca-certificates tzdata
 
-# Copy go mod files
-COPY go.mod go.sum* ./
-RUN go mod download
-
-# Copy source code
+# Copy source code first
 COPY . .
 
-# Build with maximum optimizations for size and performance
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s -extldflags '-static'" \
+# Download dependencies and build
+RUN go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s" \
     -trimpath \
     -o zoebot ./cmd/zoebot
 
