@@ -93,9 +93,9 @@ func (c *Config) Validate() error {
 	}
 
 	if len(errs) > 0 {
-		log.Println("⚠️ Configuration errors:")
+		log.Println("Config errors:")
 		for _, e := range errs {
-			log.Printf("  - %s\n", e)
+			log.Printf("  - %s", e)
 		}
 		return errors.New("configuration validation failed")
 	}

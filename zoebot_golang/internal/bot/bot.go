@@ -45,7 +45,7 @@ func New(cfg *config.Config) (*Bot, error) {
 
 	// Load tracked players
 	if err := trackedPlayers.Load(); err != nil {
-		log.Printf("⚠️ Failed to load tracked players: %v", err)
+		log.Printf("Load players failed: %v", err)
 	}
 
 	bot := &Bot{
@@ -71,11 +71,11 @@ func (b *Bot) Start() error {
 		return fmt.Errorf("failed to open Discord session: %w", err)
 	}
 
-	log.Println("✅ Bot connected to Discord")
+	log.Println("Connected to Discord")
 
 	// Register slash commands
 	if err := b.registerCommands(); err != nil {
-		log.Printf("⚠️ Failed to register commands: %v", err)
+		log.Printf("Register commands failed: %v", err)
 	}
 
 	// Start polling task
@@ -86,31 +86,14 @@ func (b *Bot) Start() error {
 
 // Stop gracefully shuts down the bot.
 func (b *Bot) Stop() error {
-	log.Println("🛑 Stopping bot...")
-
-	// Stop polling
 	close(b.stopPolling)
-
-	// Save tracked players
-	if err := b.trackedPlayers.Save(); err != nil {
-		log.Printf("⚠️ Failed to save tracked players: %v", err)
-	}
-
-	// Unregister commands (optional, can be slow)
-	// b.unregisterCommands()
-
-	// Close Discord session
-	if err := b.session.Close(); err != nil {
-		return fmt.Errorf("failed to close Discord session: %w", err)
-	}
-
-	log.Println("✅ Bot stopped")
-	return nil
+	b.trackedPlayers.Save()
+	return b.session.Close()
 }
 
 // onReady is called when the bot is ready.
 func (b *Bot) onReady(s *discordgo.Session, event *discordgo.Ready) {
-	log.Printf("✅ Bot connected as %s#%s", event.User.Username, event.User.Discriminator)
+	log.Printf("Bot ready: %s", event.User.Username)
 }
 
 // registerCommands registers all slash commands.
@@ -166,15 +149,14 @@ func (b *Bot) registerCommands() error {
 	for i, cmd := range commands {
 		registered, err := b.session.ApplicationCommandCreate(b.session.State.User.ID, "", cmd)
 		if err != nil {
-			log.Printf("⚠️ Failed to register command %s: %v", cmd.Name, err)
+			log.Printf("Command %s failed: %v", cmd.Name, err)
 			continue
 		}
 		registeredCommands[i] = registered
-		log.Printf("✅ Registered command: /%s", cmd.Name)
 	}
 
 	b.commands = registeredCommands
-	log.Println("✅ Synced slash commands")
+	log.Printf("Registered %d commands", len(registeredCommands))
 	return nil
 }
 
@@ -291,7 +273,7 @@ func (b *Bot) handleTrack(s *discordgo.Session, i *discordgo.InteractionCreate) 
 		Embeds: &[]*discordgo.MessageEmbed{embed},
 	})
 
-	log.Printf("✅ Tracked: %s (PUUID: %s)", riotID, puuid)
+	log.Printf("Tracked: %s", riotID)
 }
 
 // handleUntrack handles the /untrack command.
@@ -338,7 +320,7 @@ func (b *Bot) handleUntrack(s *discordgo.Session, i *discordgo.InteractionCreate
 				Embeds: []*discordgo.MessageEmbed{embed},
 			},
 		})
-		log.Printf("✅ Untracked: %s (PUUID: %s)", riotID, puuid)
+		log.Printf("Untracked: %s", riotID)
 	} else {
 		embed := embeds.Error(fmt.Sprintf("Không tìm thấy **%s** trong danh sách đang theo dõi.", riotID), "")
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -563,12 +545,12 @@ func (b *Bot) pollMatches() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	log.Println("🔄 Polling task started!")
+	log.Println("Polling started (1min interval)")
 
 	for {
 		select {
 		case <-b.stopPolling:
-			log.Println("🛑 Polling task stopped")
+			log.Println("Polling stopped")
 			return
 		case <-ticker.C:
 			b.checkMatches()
@@ -577,16 +559,17 @@ func (b *Bot) pollMatches() {
 }
 
 // checkMatches checks for new matches for all tracked players.
+// Optimized: Sequential with delay to avoid rate limiting
 func (b *Bot) checkMatches() {
 	players := b.trackedPlayers.GetAll()
 	if len(players) == 0 {
 		return
 	}
 
-	log.Printf("🔄 Checking matches for %d players...", len(players))
-
 	for puuid, data := range players {
 		b.checkPlayerMatch(puuid, data)
+		// Small delay between API calls to reduce burst
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
@@ -594,13 +577,12 @@ func (b *Bot) checkMatches() {
 func (b *Bot) checkPlayerMatch(puuid string, data *storage.TrackedPlayer) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("⚠️ Recovered from panic checking %s: %v", data.Name, r)
+			log.Printf("Panic checking %s: %v", data.Name, r)
 		}
 	}()
 
 	matches, err := b.riotClient.GetMatchIDsByPUUID(puuid, 1)
 	if err != nil || len(matches) == 0 {
-		log.Printf("⚠️ No matches found for %s", data.Name)
 		return
 	}
 
@@ -618,11 +600,10 @@ func (b *Bot) checkPlayerMatch(puuid string, data *storage.TrackedPlayer) {
 
 	// First time tracking, just initialize
 	if oldMatchID == "" {
-		log.Printf("📝 Initialized %s with match %s", data.Name, latestMatchID)
 		return
 	}
 
-	log.Printf("🆕 New match found for %s: %s", data.Name, latestMatchID)
+	log.Printf("New match: %s", data.Name)
 
 	// Check if already analyzed for this channel
 	b.analyzesMu.RLock()
@@ -632,7 +613,6 @@ func (b *Bot) checkPlayerMatch(puuid string, data *storage.TrackedPlayer) {
 	if exists {
 		for _, ch := range channels {
 			if ch == data.ChannelID {
-				log.Printf("⏭️ Match %s already analyzed for channel %s", latestMatchID, data.ChannelID)
 				return
 			}
 		}
@@ -657,7 +637,6 @@ func (b *Bot) checkPlayerMatch(puuid string, data *storage.TrackedPlayer) {
 
 	msg, err := b.session.ChannelMessageSendEmbed(data.ChannelID, embed)
 	if err != nil {
-		log.Printf("⚠️ Failed to send notification to channel %s: %v", data.ChannelID, err)
 		return
 	}
 
@@ -727,7 +706,7 @@ func (b *Bot) checkPlayerMatch(puuid string, data *storage.TrackedPlayer) {
 	}
 	b.analyzesMu.Unlock()
 
-	log.Printf("✅ Analysis sent for %s", playersMention)
+	log.Printf("Analyzed: %s", playersMention)
 }
 
 func min(a, b int) int {

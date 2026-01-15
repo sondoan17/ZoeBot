@@ -26,13 +26,23 @@ type Client struct {
 }
 
 // NewClient creates a new Riot API client.
+// Optimized: shorter timeout, connection reuse
 func NewClient(cfg *config.Config) *Client {
+	// Reuse connections for efficiency
+	transport := &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  false,
+	}
+
 	c := &Client{
 		apiKey:         cfg.RiotAPIKey,
 		baseURLAccount: cfg.RiotBaseURLAccount,
 		baseURLMatch:   cfg.RiotBaseURLMatch,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   15 * time.Second,
+			Transport: transport,
 		},
 		championData: make(map[string]ChampionInfo),
 	}
@@ -47,19 +57,16 @@ func NewClient(cfg *config.Config) *Client {
 func (c *Client) loadChampionData(path string) {
 	file, err := os.Open(path)
 	if err != nil {
-		log.Printf("⚠️ Failed to open champion.json: %v", err)
 		return
 	}
 	defer file.Close()
 
 	var data ChampionData
 	if err := json.NewDecoder(file).Decode(&data); err != nil {
-		log.Printf("⚠️ Failed to parse champion.json: %v", err)
 		return
 	}
 
 	c.championData = data.Data
-	log.Printf("📂 Loaded %d champions from champion.json", len(c.championData))
 }
 
 // GetChampionInfo returns champion tags and stats.

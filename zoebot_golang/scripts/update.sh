@@ -1,35 +1,28 @@
 #!/bin/bash
 # ZoeBot Update Script
-# Usage: chmod +x update.sh && ./update.sh
+# Usage: /opt/zoebot/zoebot_golang/scripts/update.sh
 
 set -e
 
-INSTALL_DIR="$HOME/zoebot/zoebot_golang"
+INSTALL_DIR="/opt/zoebot/zoebot_golang"
 
-echo "🔄 Updating ZoeBot..."
+echo "Updating ZoeBot..."
 
 cd "$INSTALL_DIR"
 
-# Pull latest changes (if using git)
-if [ -d ".git" ]; then
-    echo "📥 Pulling latest changes..."
-    git pull
-fi
+# Pull latest
+git pull
 
-# Rebuild
-echo "🔨 Rebuilding..."
-go mod tidy
-go build -ldflags="-w -s" -o zoebot ./cmd/zoebot
+# Rebuild and restart
+docker compose up -d --build
 
-# Restart service
-echo "🔄 Restarting service..."
-sudo systemctl restart zoebot
+sleep 5
 
-# Wait and check
-sleep 3
-if sudo systemctl is-active --quiet zoebot; then
-    echo "✅ ZoeBot updated and running!"
+if docker compose ps | grep -q "running"; then
+    echo "Update complete!"
+    docker compose logs --tail=10
 else
-    echo "❌ Failed to restart. Check logs:"
-    sudo journalctl -u zoebot -n 20
+    echo "Update failed!"
+    docker compose logs
+    exit 1
 fi

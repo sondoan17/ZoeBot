@@ -31,11 +31,18 @@ type RedisClient struct {
 }
 
 // NewRedisClient creates a new Redis client.
+// Optimized: shorter timeout, connection reuse
 func NewRedisClient(cfg *config.Config) *RedisClient {
 	enabled := cfg.UpstashRedisRESTURL != "" && cfg.UpstashRedisRESTToken != ""
 
 	if !enabled {
-		log.Println("⚠️ Upstash Redis not configured, using in-memory storage")
+		log.Println("Redis not configured, using memory")
+	}
+
+	transport := &http.Transport{
+		MaxIdleConns:        3,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     60 * time.Second,
 	}
 
 	return &RedisClient{
@@ -43,7 +50,8 @@ func NewRedisClient(cfg *config.Config) *RedisClient {
 		token:   cfg.UpstashRedisRESTToken,
 		enabled: enabled,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   5 * time.Second,
+			Transport: transport,
 		},
 	}
 }
@@ -154,7 +162,6 @@ func (s *TrackedPlayersStore) Load() error {
 
 	data, err := s.redis.Get(s.key)
 	if err != nil {
-		log.Printf("⚠️ Failed to load tracked players from Redis: %v", err)
 		return err
 	}
 
@@ -165,12 +172,11 @@ func (s *TrackedPlayersStore) Load() error {
 
 	var players map[string]*TrackedPlayer
 	if err := json.Unmarshal([]byte(data), &players); err != nil {
-		log.Printf("⚠️ Failed to parse tracked players: %v", err)
 		return err
 	}
 
 	s.players = players
-	log.Printf("📂 Loaded %d tracked players from Redis", len(s.players))
+	log.Printf("Loaded %d players", len(s.players))
 	return nil
 }
 
@@ -185,11 +191,9 @@ func (s *TrackedPlayersStore) Save() error {
 	}
 
 	if err := s.redis.Set(s.key, string(data)); err != nil {
-		log.Printf("⚠️ Failed to save tracked players to Redis: %v", err)
 		return err
 	}
 
-	log.Printf("💾 Saved %d tracked players to Redis", len(s.players))
 	return nil
 }
 

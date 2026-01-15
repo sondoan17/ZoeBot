@@ -24,24 +24,27 @@ type Client struct {
 }
 
 // NewClient creates a new AI client.
+// Optimized: connection reuse, reduced logging
 func NewClient(cfg *config.Config) *Client {
+	transport := &http.Transport{
+		MaxIdleConns:        5,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     60 * time.Second,
+	}
+
 	c := &Client{
 		apiKey: cfg.AIAPIKey,
 		apiURL: cfg.AIAPIURL,
 		model:  cfg.AIModel,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout:   90 * time.Second,
+			Transport: transport,
 		},
 	}
 
-	if c.apiKey != "" {
-		log.Printf("✅ Loaded AI API Key: %s*** (length: %d)", c.apiKey[:4], len(c.apiKey))
-	} else {
-		log.Println("⚠️ AI API Key is missing!")
+	if c.apiKey == "" {
+		log.Println("AI API Key missing")
 	}
-
-	log.Printf("📡 AI API URL: %s", c.apiURL)
-	log.Printf("🤖 AI Model: %s", c.model)
 
 	return c
 }

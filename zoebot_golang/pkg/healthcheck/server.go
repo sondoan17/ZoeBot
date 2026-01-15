@@ -1,51 +1,51 @@
-// Package healthcheck provides HTTP health check server for ZoeBot.
+// Package healthcheck provides a minimal HTTP health check server.
 package healthcheck
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"time"
 )
 
-// Server is an HTTP server for health checks.
+// Server is a minimal HTTP server for health checks.
 type Server struct {
 	server *http.Server
 }
 
-// New creates a new health check server.
+// New creates a new lightweight health check server.
 func New(addr string) *Server {
 	mux := http.NewServeMux()
 
+	// Minimal response, no allocations
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("I'm alive!"))
+		w.Write([]byte("ok"))
 	})
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy","service":"zoebot"}`))
+		w.Write([]byte("ok"))
 	})
 
 	return &Server{
 		server: &http.Server{
-			Addr:         addr,
-			Handler:      mux,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 10 * time.Second,
+			Addr:              addr,
+			Handler:           mux,
+			ReadTimeout:       2 * time.Second,
+			WriteTimeout:      2 * time.Second,
+			IdleTimeout:       30 * time.Second,
+			ReadHeaderTimeout: 1 * time.Second,
+			MaxHeaderBytes:    1 << 10, // 1KB
 		},
 	}
 }
 
 // Start starts the health check server.
 func (s *Server) Start() error {
-	log.Printf("🌐 Health check server starting on %s", s.server.Addr)
 	return s.server.ListenAndServe()
 }
 
 // Stop gracefully shuts down the server.
 func (s *Server) Stop(ctx context.Context) error {
-	log.Println("🛑 Stopping health check server...")
 	return s.server.Shutdown(ctx)
 }

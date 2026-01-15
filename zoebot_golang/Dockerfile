@@ -3,35 +3,40 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 
-# Install git for go mod download
-RUN apk add --no-cache git
+# Install certificates and timezone data
+RUN apk add --no-cache ca-certificates tzdata
 
 # Copy go mod files
-COPY go.mod go.sum ./
+COPY go.mod go.sum* ./
 RUN go mod download
 
 # Copy source code
 COPY . .
 
-# Build binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o zoebot ./cmd/zoebot
+# Build with maximum optimizations for size and performance
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s -extldflags '-static'" \
+    -trimpath \
+    -o zoebot ./cmd/zoebot
 
-# Runtime stage
-FROM alpine:3.19
+# Use scratch (empty) image for minimal size
+FROM scratch
 
-WORKDIR /app
+# Copy certificates for HTTPS
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
-# Install ca-certificates for HTTPS
-RUN apk add --no-cache ca-certificates tzdata
-
-# Copy binary from builder
-COPY --from=builder /app/zoebot .
+# Copy binary
+COPY --from=builder /app/zoebot /zoebot
 
 # Copy data files
-COPY --from=builder /app/data ./data
+COPY --from=builder /app/data /data
+
+# Set timezone
+ENV TZ=Asia/Ho_Chi_Minh
 
 # Expose health check port
 EXPOSE 8080
 
 # Run the bot
-CMD ["./zoebot"]
+ENTRYPOINT ["/zoebot"]
