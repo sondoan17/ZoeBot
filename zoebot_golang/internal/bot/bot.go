@@ -1,0 +1,738 @@
+// Package bot provides the Discord bot core for ZoeBot.
+package bot
+
+import (
+	"fmt"
+	"log"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/zoebot/internal/config"
+	"github.com/zoebot/internal/embeds"
+	"github.com/zoebot/internal/services/ai"
+	"github.com/zoebot/internal/services/riot"
+	"github.com/zoebot/internal/storage"
+)
+
+// Bot represents the Discord bot.
+type Bot struct {
+	session        *discordgo.Session
+	cfg            *config.Config
+	riotClient     *riot.Client
+	aiClient       *ai.Client
+	trackedPlayers *storage.TrackedPlayersStore
+	analyzedMatches map[string][]string // matchID -> []channelID
+	analyzesMu      sync.RWMutex
+	stopPolling     chan struct{}
+	commands        []*discordgo.ApplicationCommand
+}
+
+// New creates a new Bot instance.
+func New(cfg *config.Config) (*Bot, error) {
+	session, err := discordgo.New("Bot " + cfg.DiscordToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Discord session: %w", err)
+	}
+
+	// Set intents
+	session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages
+
+	// Create Redis client and tracked players store
+	redisClient := storage.NewRedisClient(cfg)
+	trackedPlayers := storage.NewTrackedPlayersStore(redisClient, cfg.RedisKeyTrackedPlayers)
+
+	// Load tracked players
+	if err := trackedPlayers.Load(); err != nil {
+		log.Printf("⚠️ Failed to load tracked players: %v", err)
+	}
+
+	bot := &Bot{
+		session:         session,
+		cfg:             cfg,
+		riotClient:      riot.NewClient(cfg),
+		aiClient:        ai.NewClient(cfg),
+		trackedPlayers:  trackedPlayers,
+		analyzedMatches: make(map[string][]string),
+		stopPolling:     make(chan struct{}),
+	}
+
+	// Register handlers
+	session.AddHandler(bot.onReady)
+	session.AddHandler(bot.onInteractionCreate)
+
+	return bot, nil
+}
+
+// Start connects to Discord and starts the bot.
+func (b *Bot) Start() error {
+	if err := b.session.Open(); err != nil {
+		return fmt.Errorf("failed to open Discord session: %w", err)
+	}
+
+	log.Println("✅ Bot connected to Discord")
+
+	// Register slash commands
+	if err := b.registerCommands(); err != nil {
+		log.Printf("⚠️ Failed to register commands: %v", err)
+	}
+
+	// Start polling task
+	go b.pollMatches()
+
+	return nil
+}
+
+// Stop gracefully shuts down the bot.
+func (b *Bot) Stop() error {
+	log.Println("🛑 Stopping bot...")
+
+	// Stop polling
+	close(b.stopPolling)
+
+	// Save tracked players
+	if err := b.trackedPlayers.Save(); err != nil {
+		log.Printf("⚠️ Failed to save tracked players: %v", err)
+	}
+
+	// Unregister commands (optional, can be slow)
+	// b.unregisterCommands()
+
+	// Close Discord session
+	if err := b.session.Close(); err != nil {
+		return fmt.Errorf("failed to close Discord session: %w", err)
+	}
+
+	log.Println("✅ Bot stopped")
+	return nil
+}
+
+// onReady is called when the bot is ready.
+func (b *Bot) onReady(s *discordgo.Session, event *discordgo.Ready) {
+	log.Printf("✅ Bot connected as %s#%s", event.User.Username, event.User.Discriminator)
+}
+
+// registerCommands registers all slash commands.
+func (b *Bot) registerCommands() error {
+	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:        "ping",
+			Description: "Kiểm tra bot còn sống không",
+		},
+		{
+			Name:        "track",
+			Description: "Theo dõi người chơi - thông báo khi có trận mới",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "riot_id",
+					Description: "Tên người chơi (VD: Faker#KR1)",
+					Required:    true,
+				},
+			},
+		},
+		{
+			Name:        "untrack",
+			Description: "Huỷ theo dõi người chơi",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "riot_id",
+					Description: "Tên người chơi cần huỷ theo dõi",
+					Required:    true,
+				},
+			},
+		},
+		{
+			Name:        "list",
+			Description: "Xem danh sách người chơi đang theo dõi",
+		},
+		{
+			Name:        "analyze",
+			Description: "Phân tích trận đấu gần nhất của người chơi",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "riot_id",
+					Description: "Tên người chơi (VD: Faker#KR1)",
+					Required:    true,
+				},
+			},
+		},
+	}
+
+	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))
+	for i, cmd := range commands {
+		registered, err := b.session.ApplicationCommandCreate(b.session.State.User.ID, "", cmd)
+		if err != nil {
+			log.Printf("⚠️ Failed to register command %s: %v", cmd.Name, err)
+			continue
+		}
+		registeredCommands[i] = registered
+		log.Printf("✅ Registered command: /%s", cmd.Name)
+	}
+
+	b.commands = registeredCommands
+	log.Println("✅ Synced slash commands")
+	return nil
+}
+
+// onInteractionCreate handles slash command interactions.
+func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type == discordgo.InteractionApplicationCommand {
+		switch i.ApplicationCommandData().Name {
+		case "ping":
+			b.handlePing(s, i)
+		case "track":
+			b.handleTrack(s, i)
+		case "untrack":
+			b.handleUntrack(s, i)
+		case "list":
+			b.handleList(s, i)
+		case "analyze":
+			b.handleAnalyze(s, i)
+		}
+	} else if i.Type == discordgo.InteractionMessageComponent {
+		b.handleComponentInteraction(s, i)
+	}
+}
+
+// handlePing handles the /ping command.
+func (b *Bot) handlePing(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	latency := s.HeartbeatLatency().Milliseconds()
+	embed := embeds.Success(
+		fmt.Sprintf("🏓 Pong! Độ trễ: **%dms**", latency),
+		"✅ Bot đang hoạt động",
+	)
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
+	})
+}
+
+// handleTrack handles the /track command.
+func (b *Bot) handleTrack(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	riotID := i.ApplicationCommandData().Options[0].StringValue()
+
+	// Validate format
+	if !strings.Contains(riotID, "#") {
+		embed := embeds.Error("Sai định dạng! Vui lòng dùng: `Name#Tag` (VD: Faker#KR1)", "")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Embeds: []*discordgo.MessageEmbed{embed},
+				Flags:  discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Send searching status
+	embed := embeds.Searching(riotID)
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
+	})
+
+	parts := strings.SplitN(riotID, "#", 2)
+	gameName, tagLine := parts[0], parts[1]
+
+	// Get PUUID
+	puuid, err := b.riotClient.GetPUUIDByRiotID(gameName, tagLine)
+	if err != nil || puuid == "" {
+		embed := embeds.Error(fmt.Sprintf("Không tìm thấy người chơi **%s**. Kiểm tra lại tên và tag.", riotID), "")
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Embeds: &[]*discordgo.MessageEmbed{embed},
+		})
+		return
+	}
+
+	// Check if already tracking
+	if existing, ok := b.trackedPlayers.Get(puuid); ok {
+		if existing.ChannelID == i.ChannelID {
+			embed := embeds.Warning(fmt.Sprintf("**%s** đã được theo dõi trong kênh này rồi.", riotID), "")
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Embeds: &[]*discordgo.MessageEmbed{embed},
+			})
+			return
+		}
+	}
+
+	// Get latest match to initialize
+	matches, _ := b.riotClient.GetMatchIDsByPUUID(puuid, 1)
+	var lastMatchID string
+	if len(matches) > 0 {
+		lastMatchID = matches[0]
+	}
+
+	// Add to tracking
+	b.trackedPlayers.Set(puuid, &storage.TrackedPlayer{
+		LastMatchID: lastMatchID,
+		ChannelID:   i.ChannelID,
+		Name:        riotID,
+	})
+	b.trackedPlayers.Save()
+
+	embed = embeds.Success(
+		fmt.Sprintf("Đã thêm **%s** vào danh sách theo dõi!\nBot sẽ thông báo khi có trận mới.", riotID),
+		"✅ Đã theo dõi",
+	)
+	embed.Thumbnail = &discordgo.MessageEmbedThumbnail{
+		URL: embeds.GetChampionIcon("Zoe"),
+	}
+
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Embeds: &[]*discordgo.MessageEmbed{embed},
+	})
+
+	log.Printf("✅ Tracked: %s (PUUID: %s)", riotID, puuid)
+}
+
+// handleUntrack handles the /untrack command.
+func (b *Bot) handleUntrack(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	riotID := i.ApplicationCommandData().Options[0].StringValue()
+
+	// Validate format
+	if !strings.Contains(riotID, "#") {
+		embed := embeds.Error("Sai định dạng! Vui lòng dùng: `Name#Tag` (VD: Faker#KR1)", "")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Embeds: []*discordgo.MessageEmbed{embed},
+				Flags:  discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	parts := strings.SplitN(riotID, "#", 2)
+	gameName, tagLine := parts[0], parts[1]
+
+	// Get PUUID
+	puuid, err := b.riotClient.GetPUUIDByRiotID(gameName, tagLine)
+	if err != nil || puuid == "" {
+		embed := embeds.Error(fmt.Sprintf("Không tìm thấy **%s** trong danh sách đang theo dõi.", riotID), "")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Embeds: []*discordgo.MessageEmbed{embed},
+			},
+		})
+		return
+	}
+
+	if _, ok := b.trackedPlayers.Get(puuid); ok {
+		b.trackedPlayers.Delete(puuid)
+		b.trackedPlayers.Save()
+
+		embed := embeds.Success(fmt.Sprintf("Đã huỷ theo dõi **%s**.", riotID), "")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Embeds: []*discordgo.MessageEmbed{embed},
+			},
+		})
+		log.Printf("✅ Untracked: %s (PUUID: %s)", riotID, puuid)
+	} else {
+		embed := embeds.Error(fmt.Sprintf("Không tìm thấy **%s** trong danh sách đang theo dõi.", riotID), "")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Embeds: []*discordgo.MessageEmbed{embed},
+			},
+		})
+	}
+}
+
+// handleList handles the /list command.
+func (b *Bot) handleList(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	channelPlayers := b.trackedPlayers.GetByChannel(i.ChannelID)
+
+	var playerNames []string
+	for _, p := range channelPlayers {
+		playerNames = append(playerNames, p.Name)
+	}
+
+	channelName := "Unknown"
+	if channel, err := s.Channel(i.ChannelID); err == nil {
+		channelName = channel.Name
+	}
+
+	embed := embeds.TrackingList(playerNames, channelName)
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
+	})
+}
+
+// handleAnalyze handles the /analyze command.
+func (b *Bot) handleAnalyze(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	riotID := i.ApplicationCommandData().Options[0].StringValue()
+
+	// Validate format
+	if !strings.Contains(riotID, "#") {
+		embed := embeds.Error("Sai định dạng! Vui lòng dùng: `Name#Tag` (VD: Faker#KR1)", "")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Embeds: []*discordgo.MessageEmbed{embed},
+				Flags:  discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Send searching status
+	embed := embeds.Searching(riotID)
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
+	})
+
+	parts := strings.SplitN(riotID, "#", 2)
+	gameName, tagLine := parts[0], parts[1]
+
+	// Get PUUID
+	puuid, err := b.riotClient.GetPUUIDByRiotID(gameName, tagLine)
+	if err != nil || puuid == "" {
+		embed := embeds.Error(fmt.Sprintf("Không tìm thấy người chơi **%s**. Kiểm tra lại tên và tag.", riotID), "")
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Embeds: &[]*discordgo.MessageEmbed{embed},
+		})
+		return
+	}
+
+	// Get latest match
+	matches, err := b.riotClient.GetMatchIDsByPUUID(puuid, 1)
+	if err != nil || len(matches) == 0 {
+		embed := embeds.Error("Người chơi này chưa đánh trận nào gần đây.", "")
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Embeds: &[]*discordgo.MessageEmbed{embed},
+		})
+		return
+	}
+
+	matchID := matches[0]
+
+	// Update status
+	embed = embeds.Analyzing(riotID, matchID)
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Embeds: &[]*discordgo.MessageEmbed{embed},
+	})
+
+	// Get match details and timeline
+	matchDetails, err := b.riotClient.GetMatchDetails(matchID)
+	if err != nil {
+		embed := embeds.Error("Không thể lấy dữ liệu chi tiết của trận đấu.", "")
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Embeds: &[]*discordgo.MessageEmbed{embed},
+		})
+		return
+	}
+
+	timeline, _ := b.riotClient.GetMatchTimeline(matchID)
+
+	// Parse match data
+	matchData := b.riotClient.ParseMatchData(matchDetails, puuid, timeline)
+	if matchData == nil {
+		embed := embeds.Error("Không thể xử lý dữ liệu trận đấu.", "")
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Embeds: &[]*discordgo.MessageEmbed{embed},
+		})
+		return
+	}
+
+	// Get AI analysis
+	analysisResult, err := b.aiClient.AnalyzeMatch(matchData)
+	if err != nil {
+		embed := embeds.Error(fmt.Sprintf("Lỗi AI: %s", err.Error()[:min(200, len(err.Error()))]), "")
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Embeds: &[]*discordgo.MessageEmbed{embed},
+		})
+		return
+	}
+
+	// Create embed
+	embed = embeds.CompactAnalysis(analysisResult.Players, matchData)
+
+	// Create buttons
+	components := []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.Button{
+					Label:    "👤 Xem chi tiết từng người",
+					Style:    discordgo.SecondaryButton,
+					CustomID: fmt.Sprintf("detail_%s_%s", matchID, puuid),
+				},
+				discordgo.Button{
+					Label:    "🔗 Copy Match ID",
+					Style:    discordgo.SecondaryButton,
+					CustomID: fmt.Sprintf("copy_%s", matchID),
+				},
+			},
+		},
+	}
+
+	// Check if not tracked and add track button
+	if _, ok := b.trackedPlayers.Get(puuid); !ok {
+		components[0].(discordgo.ActionsRow).Components = append(
+			components[0].(discordgo.ActionsRow).Components,
+			discordgo.Button{
+				Label:    "📌 Track người chơi này",
+				Style:    discordgo.PrimaryButton,
+				CustomID: fmt.Sprintf("track_%s_%s", riotID, i.ChannelID),
+			},
+		)
+	}
+
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Embeds:     &[]*discordgo.MessageEmbed{embed},
+		Components: &components,
+	})
+}
+
+// handleComponentInteraction handles button/component interactions.
+func (b *Bot) handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	customID := i.MessageComponentData().CustomID
+
+	switch {
+	case strings.HasPrefix(customID, "copy_"):
+		matchID := strings.TrimPrefix(customID, "copy_")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: fmt.Sprintf("```\n%s\n```", matchID),
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+
+	case strings.HasPrefix(customID, "track_"):
+		parts := strings.SplitN(strings.TrimPrefix(customID, "track_"), "_", 2)
+		if len(parts) < 2 {
+			return
+		}
+		riotID := parts[0]
+		channelID := parts[1]
+
+		riotParts := strings.SplitN(riotID, "#", 2)
+		if len(riotParts) < 2 {
+			return
+		}
+
+		puuid, err := b.riotClient.GetPUUIDByRiotID(riotParts[0], riotParts[1])
+		if err != nil || puuid == "" {
+			return
+		}
+
+		matches, _ := b.riotClient.GetMatchIDsByPUUID(puuid, 1)
+		var lastMatchID string
+		if len(matches) > 0 {
+			lastMatchID = matches[0]
+		}
+
+		b.trackedPlayers.Set(puuid, &storage.TrackedPlayer{
+			LastMatchID: lastMatchID,
+			ChannelID:   channelID,
+			Name:        riotID,
+		})
+		b.trackedPlayers.Save()
+
+		embed := embeds.Success(fmt.Sprintf("Đã thêm **%s** vào danh sách theo dõi!", riotID), "")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Embeds: []*discordgo.MessageEmbed{embed},
+				Flags:  discordgo.MessageFlagsEphemeral,
+			},
+		})
+	}
+}
+
+// pollMatches runs the background task to check for new matches.
+func (b *Bot) pollMatches() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	log.Println("🔄 Polling task started!")
+
+	for {
+		select {
+		case <-b.stopPolling:
+			log.Println("🛑 Polling task stopped")
+			return
+		case <-ticker.C:
+			b.checkMatches()
+		}
+	}
+}
+
+// checkMatches checks for new matches for all tracked players.
+func (b *Bot) checkMatches() {
+	players := b.trackedPlayers.GetAll()
+	if len(players) == 0 {
+		return
+	}
+
+	log.Printf("🔄 Checking matches for %d players...", len(players))
+
+	for puuid, data := range players {
+		b.checkPlayerMatch(puuid, data)
+	}
+}
+
+// checkPlayerMatch checks for new match for a single player.
+func (b *Bot) checkPlayerMatch(puuid string, data *storage.TrackedPlayer) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("⚠️ Recovered from panic checking %s: %v", data.Name, r)
+		}
+	}()
+
+	matches, err := b.riotClient.GetMatchIDsByPUUID(puuid, 1)
+	if err != nil || len(matches) == 0 {
+		log.Printf("⚠️ No matches found for %s", data.Name)
+		return
+	}
+
+	latestMatchID := matches[0]
+	oldMatchID := data.LastMatchID
+
+	// No new match
+	if latestMatchID == oldMatchID {
+		return
+	}
+
+	// Update last match ID
+	b.trackedPlayers.UpdateLastMatch(puuid, latestMatchID)
+	b.trackedPlayers.Save()
+
+	// First time tracking, just initialize
+	if oldMatchID == "" {
+		log.Printf("📝 Initialized %s with match %s", data.Name, latestMatchID)
+		return
+	}
+
+	log.Printf("🆕 New match found for %s: %s", data.Name, latestMatchID)
+
+	// Check if already analyzed for this channel
+	b.analyzesMu.RLock()
+	channels, exists := b.analyzedMatches[latestMatchID]
+	b.analyzesMu.RUnlock()
+
+	if exists {
+		for _, ch := range channels {
+			if ch == data.ChannelID {
+				log.Printf("⏭️ Match %s already analyzed for channel %s", latestMatchID, data.ChannelID)
+				return
+			}
+		}
+	}
+
+	// Find all tracked players in this match for this channel
+	allPlayers := b.trackedPlayers.GetAll()
+	var playersInMatch []string
+	for _, p := range allPlayers {
+		if p.ChannelID == data.ChannelID && p.LastMatchID == latestMatchID {
+			playersInMatch = append(playersInMatch, fmt.Sprintf("**%s**", p.Name))
+		}
+	}
+
+	playersMention := strings.Join(playersInMatch, ", ")
+
+	// Send notification
+	embed := embeds.Info(
+		fmt.Sprintf("%s vừa chơi xong trận!\n⏳ Đang phân tích...", playersMention),
+		"🚨 TRẬN MỚI",
+	)
+
+	msg, err := b.session.ChannelMessageSendEmbed(data.ChannelID, embed)
+	if err != nil {
+		log.Printf("⚠️ Failed to send notification to channel %s: %v", data.ChannelID, err)
+		return
+	}
+
+	// Get match details and analyze
+	matchDetails, err := b.riotClient.GetMatchDetails(latestMatchID)
+	if err != nil {
+		embed := embeds.Error("Không thể lấy dữ liệu trận đấu từ Riot API.", "")
+		b.session.ChannelMessageEditEmbed(data.ChannelID, msg.ID, embed)
+		return
+	}
+
+	timeline, _ := b.riotClient.GetMatchTimeline(latestMatchID)
+	matchData := b.riotClient.ParseMatchData(matchDetails, puuid, timeline)
+
+	if matchData == nil {
+		embed := embeds.Error("Không thể xử lý dữ liệu trận đấu.", "")
+		b.session.ChannelMessageEditEmbed(data.ChannelID, msg.ID, embed)
+		return
+	}
+
+	analysisResult, err := b.aiClient.AnalyzeMatch(matchData)
+	if err != nil {
+		embed := embeds.Error(fmt.Sprintf("Lỗi AI: %s", err.Error()[:min(200, len(err.Error()))]), "")
+		b.session.ChannelMessageEditEmbed(data.ChannelID, msg.ID, embed)
+		return
+	}
+
+	// Create embed with analysis
+	embed = embeds.CompactAnalysis(analysisResult.Players, matchData)
+
+	// Create buttons
+	components := []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.Button{
+					Label:    "📊 Xem phân tích đầy đủ",
+					Style:    discordgo.PrimaryButton,
+					CustomID: fmt.Sprintf("full_%s_%s", latestMatchID, puuid),
+				},
+				discordgo.Button{
+					Label:    "🔗 Copy Match ID",
+					Style:    discordgo.SecondaryButton,
+					CustomID: fmt.Sprintf("copy_%s", latestMatchID),
+				},
+			},
+		},
+	}
+
+	// Edit the message with analysis
+	b.session.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		ID:         msg.ID,
+		Channel:    data.ChannelID,
+		Embeds:     &[]*discordgo.MessageEmbed{embed},
+		Components: &components,
+	})
+
+	// Mark as analyzed
+	b.analyzesMu.Lock()
+	b.analyzedMatches[latestMatchID] = append(b.analyzedMatches[latestMatchID], data.ChannelID)
+
+	// Cleanup old entries
+	if len(b.analyzedMatches) > 50 {
+		for k := range b.analyzedMatches {
+			delete(b.analyzedMatches, k)
+			break
+		}
+	}
+	b.analyzesMu.Unlock()
+
+	log.Printf("✅ Analysis sent for %s", playersMention)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

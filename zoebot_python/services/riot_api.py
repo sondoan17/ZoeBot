@@ -1,19 +1,33 @@
+"""
+Riot API Service for ZoeBot
+Handles all Riot Games API interactions.
+"""
+
 import requests
-import os
 import json
 import logging
+from pathlib import Path
 
-# Basic logging setup
-logging.basicConfig(level=logging.INFO)
+from config import (
+    RIOT_API_KEY,
+    RIOT_BASE_URL_ACCOUNT,
+    RIOT_BASE_URL_MATCH,
+    DATA_DIR,
+)
+
 logger = logging.getLogger(__name__)
 
 
-# Load champion data for role detection
-def load_champion_data():
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHAMPION DATA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def load_champion_data() -> dict:
     """Load champion.json to get champion tags (Tank, Fighter, Mage, etc.)"""
     try:
-        champion_file = os.path.join(os.path.dirname(__file__), "champion.json")
-        if os.path.exists(champion_file):
+        champion_file = DATA_DIR / "champion.json"
+        if champion_file.exists():
             with open(champion_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 return data.get("data", {})
@@ -25,7 +39,7 @@ def load_champion_data():
 CHAMPION_DATA = load_champion_data()
 
 
-def get_champion_info(champion_name):
+def get_champion_info(champion_name: str) -> dict:
     """Get champion tags and stats from champion.json"""
     champ = CHAMPION_DATA.get(champion_name, {})
     return {
@@ -36,21 +50,22 @@ def get_champion_info(champion_name):
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# RIOT API CLIENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 class RiotAPI:
-    def __init__(self, api_key):
-        self.api_key = api_key
-        self.base_url_account = (
-            "https://asia.api.riotgames.com"  # For PUUID (VN is in Asia/SEA)
-        )
-        self.base_url_match = (
-            "https://sea.api.riotgames.com"  # For Matches (VN/SEA servers)
-        )
+    """Client for Riot Games API."""
+
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or RIOT_API_KEY
+        self.base_url_account = RIOT_BASE_URL_ACCOUNT
+        self.base_url_match = RIOT_BASE_URL_MATCH
         self.headers = {"X-Riot-Token": self.api_key}
 
-    def get_puuid_by_riot_id(self, game_name, tag_line):
-        """
-        Get PUUID from Riot ID (Name#Tag)
-        """
+    def get_puuid_by_riot_id(self, game_name: str, tag_line: str) -> str | None:
+        """Get PUUID from Riot ID (Name#Tag)"""
         url = f"{self.base_url_account}/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}"
         try:
             response = requests.get(url, headers=self.headers)
@@ -60,10 +75,8 @@ class RiotAPI:
             logger.error(f"Error fetching PUUID for {game_name}#{tag_line}: {e}")
             return None
 
-    def get_match_ids_by_puuid(self, puuid, count=5):
-        """
-        Get list of recent match IDs
-        """
+    def get_match_ids_by_puuid(self, puuid: str, count: int = 5) -> list:
+        """Get list of recent match IDs"""
         url = f"{self.base_url_match}/lol/match/v5/matches/by-puuid/{puuid}/ids"
         params = {"start": 0, "count": count}
         try:
@@ -74,10 +87,8 @@ class RiotAPI:
             logger.error(f"Error fetching match IDs for {puuid}: {e}")
             return []
 
-    def get_match_details(self, match_id):
-        """
-        Get full details of a match
-        """
+    def get_match_details(self, match_id: str) -> dict | None:
+        """Get full details of a match"""
         url = f"{self.base_url_match}/lol/match/v5/matches/{match_id}"
         try:
             response = requests.get(url, headers=self.headers)
@@ -87,10 +98,8 @@ class RiotAPI:
             logger.error(f"Error fetching details for match {match_id}: {e}")
             return None
 
-    def get_match_timeline(self, match_id):
-        """
-        Get timeline data for a match (events, snapshots per minute)
-        """
+    def get_match_timeline(self, match_id: str) -> dict | None:
+        """Get timeline data for a match (events, snapshots per minute)"""
         url = f"{self.base_url_match}/lol/match/v5/matches/{match_id}/timeline"
         try:
             response = requests.get(url, headers=self.headers)
@@ -100,14 +109,19 @@ class RiotAPI:
             logger.error(f"Error fetching timeline for match {match_id}: {e}")
             return None
 
-    def parse_timeline_data(self, timeline_data, target_puuid, participants_list):
+    def parse_timeline_data(
+        self,
+        timeline_data: dict,
+        target_puuid: str,
+        participants_list: list,
+    ) -> dict | None:
         """
         Parse timeline data to extract key insights for AI analysis.
 
         Args:
             timeline_data: Full timeline response from Riot API
             target_puuid: PUUID of the target player
-            participants_list: List of participants from match details (to map participantId to PUUID)
+            participants_list: List of participants from match details
 
         Returns:
             Dictionary with timeline insights
@@ -173,14 +187,12 @@ class RiotAPI:
 
                     # Track deaths of target team
                     if id_to_team.get(victim_id) == target_team:
-                        deaths_timeline.append(
-                            {
-                                "time_min": event_time_min,
-                                "player": id_to_name.get(victim_id),
-                                "position": id_to_position.get(victim_id),
-                                "killer": id_to_name.get(killer_id),
-                            }
-                        )
+                        deaths_timeline.append({
+                            "time_min": event_time_min,
+                            "player": id_to_name.get(victim_id),
+                            "position": id_to_position.get(victim_id),
+                            "killer": id_to_name.get(killer_id),
+                        })
 
                     # Track kills by target team
                     if id_to_team.get(killer_id) == target_team:
@@ -188,28 +200,22 @@ class RiotAPI:
 
                 # Objective kills (Dragon, Baron, Herald)
                 elif event_type == "ELITE_MONSTER_KILL":
-                    objective_kills.append(
-                        {
-                            "time_min": event_time_min,
-                            "monster_type": event.get("monsterType"),
-                            "monster_subtype": event.get("monsterSubType"),
-                            "killer": id_to_name.get(event.get("killerId")),
-                            "killer_team": id_to_team.get(event.get("killerId")),
-                        }
-                    )
+                    objective_kills.append({
+                        "time_min": event_time_min,
+                        "monster_type": event.get("monsterType"),
+                        "monster_subtype": event.get("monsterSubType"),
+                        "killer": id_to_name.get(event.get("killerId")),
+                        "killer_team": id_to_team.get(event.get("killerId")),
+                    })
 
                 # Turret plates
                 elif event_type == "TURRET_PLATE_DESTROYED":
-                    turret_plates.append(
-                        {
-                            "time_min": event_time_min,
-                            "lane": event.get("laneType"),
-                            "killer": id_to_name.get(event.get("killerId")),
-                            "team_destroyed": event.get(
-                                "teamId"
-                            ),  # Team whose plate was destroyed
-                        }
-                    )
+                    turret_plates.append({
+                        "time_min": event_time_min,
+                        "lane": event.get("laneType"),
+                        "killer": id_to_name.get(event.get("killerId")),
+                        "team_destroyed": event.get("teamId"),
+                    })
 
         # Extract gold/CS snapshots at key times (5min, 10min, 15min)
         gold_snapshots = {}
@@ -217,10 +223,9 @@ class RiotAPI:
 
         key_minutes = [5, 10, 15]
         for target_min in key_minutes:
-            # Find frame closest to target minute
             for frame in frames:
                 frame_min = frame.get("timestamp", 0) / 1000 / 60
-                if abs(frame_min - target_min) < 0.5:  # Within 30 seconds
+                if abs(frame_min - target_min) < 0.5:
                     participant_frames = frame.get("participantFrames", {})
                     gold_snapshots[f"{target_min}min"] = {}
                     cs_snapshots[f"{target_min}min"] = {}
@@ -228,12 +233,10 @@ class RiotAPI:
                     for pid_str, pf in participant_frames.items():
                         pid = int(pid_str)
                         name = id_to_name.get(pid, f"Player_{pid}")
-                        gold_snapshots[f"{target_min}min"][name] = pf.get(
-                            "totalGold", 0
+                        gold_snapshots[f"{target_min}min"][name] = pf.get("totalGold", 0)
+                        cs_snapshots[f"{target_min}min"][name] = (
+                            pf.get("minionsKilled", 0) + pf.get("jungleMinionsKilled", 0)
                         )
-                        cs_snapshots[f"{target_min}min"][name] = pf.get(
-                            "minionsKilled", 0
-                        ) + pf.get("jungleMinionsKilled", 0)
                     break
 
         # Calculate gold diff for target team at 10min
@@ -245,12 +248,8 @@ class RiotAPI:
                     player_pos = p.get("teamPosition")
                     player_gold = gold_snapshots["10min"].get(player_name, 0)
 
-                    # Find opponent
                     for opp in participants_list:
-                        if (
-                            opp.get("teamId") != target_team
-                            and opp.get("teamPosition") == player_pos
-                        ):
+                        if opp.get("teamId") != target_team and opp.get("teamPosition") == player_pos:
                             opp_name = opp.get("riotIdGameName")
                             opp_gold = gold_snapshots["10min"].get(opp_name, 0)
                             gold_diff_10min[player_name] = {
@@ -264,7 +263,7 @@ class RiotAPI:
         return {
             "first_blood": first_blood,
             "deaths_timeline": deaths_timeline,
-            "kills_timeline": kills_timeline[:10],  # Limit to avoid too much data
+            "kills_timeline": kills_timeline[:10],
             "objective_kills": objective_kills,
             "turret_plates_destroyed": len(
                 [p for p in turret_plates if p.get("team_destroyed") != target_team]
@@ -278,10 +277,14 @@ class RiotAPI:
             ),
         }
 
-    def parse_match_data(self, full_data, target_puuid, timeline_data=None):
+    def parse_match_data(
+        self,
+        full_data: dict,
+        target_puuid: str,
+        timeline_data: dict = None,
+    ) -> dict | None:
         """
         Filter and extract comprehensive data for AI analysis.
-        Returns teammates and their lane opponents for comparison.
 
         Args:
             full_data: Match details from get_match_details()
@@ -322,43 +325,36 @@ class RiotAPI:
             return {
                 # Identity
                 "championName": champion_name,
-                "championTags": champ_info["tags"],  # ["Tank", "Fighter"] etc.
-                "championDefense": champ_info["defense"],  # 1-10 scale
+                "championTags": champ_info["tags"],
+                "championDefense": champ_info["defense"],
                 "riotIdGameName": p.get("riotIdGameName"),
                 "teamPosition": p.get("teamPosition"),
                 "individualPosition": p.get("individualPosition"),
                 "win": p.get("win"),
-                # 1. Combat Performance
+                # Combat Performance
                 "kills": p.get("kills"),
                 "deaths": p.get("deaths"),
                 "assists": p.get("assists"),
                 "kda": round(challenges.get("kda", 0), 2),
-                "killParticipation": round(
-                    challenges.get("killParticipation", 0) * 100, 1
-                ),
+                "killParticipation": round(challenges.get("killParticipation", 0) * 100, 1),
                 "takedowns": challenges.get("takedowns", 0),
                 "largestKillingSpree": p.get("largestKillingSpree", 0),
                 "soloKills": challenges.get("soloKills", 0),
                 "timeSpentDead": p.get("totalTimeSpentDead", 0),
-                # 2. Damage Dealt
+                # Damage Dealt
                 "totalDamageDealtToChampions": p.get("totalDamageDealtToChampions", 0),
                 "damagePerMinute": round(challenges.get("damagePerMinute", 0), 0),
-                "teamDamagePercentage": round(
-                    challenges.get("teamDamagePercentage", 0) * 100, 1
-                ),
+                "teamDamagePercentage": round(challenges.get("teamDamagePercentage", 0) * 100, 1),
                 "timeCCingOthers": p.get("timeCCingOthers", 0),
-                # 3. Damage Taken (IMPORTANT for Tanks)
+                # Damage Taken
                 "totalDamageTaken": p.get("totalDamageTaken", 0),
                 "damageTakenOnTeamPercentage": round(
                     challenges.get("damageTakenOnTeamPercentage", 0) * 100, 1
                 ),
                 "damageSelfMitigated": p.get("damageSelfMitigated", 0),
-                # 4. Laning & Economy
-                "laneMinionsFirst10Minutes": challenges.get(
-                    "laneMinionsFirst10Minutes", 0
-                ),
-                "totalCS": p.get("totalMinionsKilled", 0)
-                + p.get("neutralMinionsKilled", 0),
+                # Laning & Economy
+                "laneMinionsFirst10Minutes": challenges.get("laneMinionsFirst10Minutes", 0),
+                "totalCS": p.get("totalMinionsKilled", 0) + p.get("neutralMinionsKilled", 0),
                 "csPerMinute": round(
                     (p.get("totalMinionsKilled", 0) + p.get("neutralMinionsKilled", 0))
                     / game_duration_minutes,
@@ -367,16 +363,14 @@ class RiotAPI:
                 "goldEarned": p.get("goldEarned", 0),
                 "goldPerMinute": round(challenges.get("goldPerMinute", 0), 0),
                 "champLevel": p.get("champLevel", 0),
-                # 5. Macro & Objectives
+                # Macro & Objectives
                 "dragonTakedowns": challenges.get("dragonTakedowns", 0),
                 "baronTakedowns": challenges.get("baronTakedowns", 0),
                 "damageDealtToObjectives": p.get("damageDealtToObjectives", 0),
                 "turretTakedowns": challenges.get("turretTakedowns", 0),
-                # 6. Vision Control
+                # Vision Control
                 "visionScore": p.get("visionScore", 0),
-                "visionScorePerMinute": round(
-                    challenges.get("visionScorePerMinute", 0), 2
-                ),
+                "visionScorePerMinute": round(challenges.get("visionScorePerMinute", 0), 2),
                 "wardsPlaced": p.get("wardsPlaced", 0),
                 "controlWardsPlaced": challenges.get("controlWardsPlaced", 0),
                 "wardsKilled": p.get("wardsKilled", 0),
@@ -419,9 +413,7 @@ class RiotAPI:
             "gameDurationMinutes": round(game_duration_minutes, 1),
             "gameMode": game_mode,
             "win": target_player.get("win") if target_player else None,
-            "target_player_name": target_player.get("riotIdGameName")
-            if target_player
-            else None,
+            "target_player_name": target_player.get("riotIdGameName") if target_player else None,
             "teammates": participants_data,
             "lane_matchups": lane_matchups,
             "timeline_insights": timeline_insights,

@@ -1,16 +1,20 @@
+"""
+AI Analysis Service for ZoeBot
+Handles match analysis using LLM API.
+"""
+
 import asyncio
 import json
 import logging
-import os
-
 import requests
 
-logging.basicConfig(level=logging.INFO)
+from config import AI_API_KEY, AI_API_URL, AI_MODEL
+
 logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PROMPTS - Tách prompt ra khỏi logic
+# PROMPTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """Bạn là "Zoe Bot" - nhà phân tích League of Legends. Phong cách: hài hước, toxic mạnh nhưng CHÍNH XÁC.
@@ -77,7 +81,7 @@ LƯU Ý:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# RESPONSE SCHEMA - JSON Schema cho structured output
+# RESPONSE SCHEMA
 # ═══════════════════════════════════════════════════════════════════════════════
 
 RESPONSE_SCHEMA = {
@@ -104,7 +108,7 @@ RESPONSE_SCHEMA = {
                             },
                             "position_vn": {
                                 "type": "string",
-                                "description": "Vị trí bằng tiếng Việt: Đường trên/Đi rừng/Đường giữa/Xạ thủ/Hỗ trợ",
+                                "description": "Vị trí bằng tiếng Việt",
                             },
                             "score": {
                                 "type": "number",
@@ -112,27 +116,27 @@ RESPONSE_SCHEMA = {
                             },
                             "vs_opponent": {
                                 "type": "string",
-                                "description": "So sánh với đối thủ cùng lane (TIẾNG VIỆT)",
+                                "description": "So sánh với đối thủ cùng lane",
                             },
                             "role_analysis": {
                                 "type": "string",
-                                "description": "Phân tích vai trò tướng (TIẾNG VIỆT) - Tank có tank không? Carry có damage không?",
+                                "description": "Phân tích vai trò tướng",
                             },
                             "highlight": {
                                 "type": "string",
-                                "description": "Điểm mạnh (TIẾNG VIỆT)",
+                                "description": "Điểm mạnh",
                             },
                             "weakness": {
                                 "type": "string",
-                                "description": "Điểm yếu toxic (TIẾNG VIỆT)",
+                                "description": "Điểm yếu toxic",
                             },
                             "comment": {
                                 "type": "string",
-                                "description": "Nhận xét tổng kết 2 câu (TIẾNG VIỆT)",
+                                "description": "Nhận xét tổng kết",
                             },
                             "timeline_analysis": {
                                 "type": "string",
-                                "description": "Phân tích dựa trên timeline nếu có: gold diff @10min, thời điểm chết, objective control (TIẾNG VIỆT, 1-2 câu)",
+                                "description": "Phân tích timeline",
                             },
                         },
                         "required": [
@@ -158,90 +162,65 @@ RESPONSE_SCHEMA = {
 }
 
 
-class AIAnalysis:
-    def __init__(self, api_key=None):
-        # Using cliproxy API - load from environment variables
-        self.api_key = api_key or os.environ.get("CLIPROXY_API_KEY", "")
-        self.api_url = os.environ.get("CLIPROXY_API_URL")
-        self.model = os.environ.get("CLIPROXY_MODEL")
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI ANALYSIS CLASS
+# ═══════════════════════════════════════════════════════════════════════════════
 
-        # Debug log - show first 4 chars of API key
-        logger.info(
-            f"Loaded API Key: {self.api_key[:4]}*** (length: {len(self.api_key)})"
-        )
+
+class AIAnalysis:
+    """AI-powered match analysis service."""
+
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or AI_API_KEY
+        self.api_url = AI_API_URL
+        self.model = AI_MODEL
+
+        if self.api_key:
+            logger.info(f"Loaded API Key: {self.api_key[:4]}*** (length: {len(self.api_key)})")
+        else:
+            logger.error("AI API Key is missing!")
+
         logger.info(f"API URL: {self.api_url}")
         logger.info(f"Model: {self.model}")
 
-        if not self.api_key:
-            logger.error(
-                "CLIPROXY_API_KEY is missing! Set it in environment variables."
-            )
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # HELPER METHODS - Tách logic ra khỏi analyze_match
-    # ═══════════════════════════════════════════════════════════════════════════
-
     def _build_timeline_text(self, timeline_insights: dict) -> str:
-        """
-        Build formatted timeline text for AI prompt.
-
-        Args:
-            timeline_insights: Dictionary containing timeline data
-
-        Returns:
-            Formatted string with timeline information
-        """
+        """Build formatted timeline text for AI prompt."""
         if not timeline_insights:
             return ""
 
-        # First Blood
         fb = timeline_insights.get("first_blood")
         fb_text = (
             f"{fb.get('killer')} giết {fb.get('victim')} lúc {fb.get('time_min')} phút"
-            if fb
-            else "Không có data"
+            if fb else "Không có data"
         )
 
-        # Gold diff @10min
         gold_diff = timeline_insights.get("gold_diff_10min", {})
         gold_diff_text = (
-            "\n".join(
-                [
-                    f"  • {name}: {data.get('diff'):+d} gold ({data.get('position')})"
-                    for name, data in gold_diff.items()
-                ]
-            )
-            if gold_diff
-            else "  Không có data"
+            "\n".join([
+                f"  • {name}: {data.get('diff'):+d} gold ({data.get('position')})"
+                for name, data in gold_diff.items()
+            ])
+            if gold_diff else "  Không có data"
         )
 
-        # Deaths timeline
         deaths = timeline_insights.get("deaths_timeline", [])[:5]
         deaths_text = (
-            "\n".join(
-                [
-                    f"  • {d.get('player')} chết lúc {d.get('time_min')} phút bởi {d.get('killer')}"
-                    for d in deaths
-                ]
-            )
-            if deaths
-            else "  Không có deaths"
+            "\n".join([
+                f"  • {d.get('player')} chết lúc {d.get('time_min')} phút bởi {d.get('killer')}"
+                for d in deaths
+            ])
+            if deaths else "  Không có deaths"
         )
 
-        # Objectives
         objectives = timeline_insights.get("objective_kills", [])
         obj_text = (
-            "\n".join(
-                [
-                    f"  • {o.get('monster_type')} lúc {o.get('time_min')} phút bởi {o.get('killer')}"
-                    for o in objectives[:5]
-                ]
-            )
-            if objectives
-            else "  Không có objectives"
+            "\n".join([
+                f"  • {o.get('monster_type')} lúc {o.get('time_min')} phút bởi {o.get('killer')}"
+                for o in objectives[:5]
+            ])
+            if objectives else "  Không có objectives"
         )
 
-        # Turret plates
         plates_destroyed = timeline_insights.get("turret_plates_destroyed", 0)
         plates_lost = timeline_insights.get("turret_plates_lost", 0)
 
@@ -258,15 +237,7 @@ DIỄN BIẾN TRẬN ĐẤU (Timeline):
 🏰 Turret Plates: Team lấy {plates_destroyed}, mất {plates_lost}"""
 
     def _build_user_prompt(self, match_data: dict) -> str:
-        """
-        Build user prompt from match data.
-
-        Args:
-            match_data: Dictionary containing match information
-
-        Returns:
-            Formatted user prompt string
-        """
+        """Build user prompt from match data."""
         lane_matchups = match_data.get("lane_matchups", [])
         timeline_insights = match_data.get("timeline_insights")
         timeline_text = self._build_timeline_text(timeline_insights)
@@ -295,34 +266,38 @@ Phân tích 5 người chơi. So sánh với đối thủ cùng lane, kiểm tra
         else:
             return "❌"
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # MAIN METHODS
-    # ═══════════════════════════════════════════════════════════════════════════
+    def _parse_ai_response(self, ai_content: str) -> dict | None:
+        """Parse AI JSON response to dictionary."""
+        try:
+            content = ai_content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
 
-    async def analyze_match(self, match_data: dict) -> str:
-        """
-        Sends match data to AI API to generate a coach-like analysis.
+            data = json.loads(content)
 
-        Args:
-            match_data: Dictionary containing match information
+            if isinstance(data, list):
+                return {"players": data}
+            elif isinstance(data, dict) and "players" in data:
+                return data
+            else:
+                return {"players": []}
 
-        Returns:
-            Formatted Discord message string
-        """
-        # Validation
-        if not self.api_key:
-            return "⚠️ Lỗi: Chưa cấu hình API Key."
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse AI JSON: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing AI response: {e}")
+            return None
 
-        if not match_data:
-            return "Error: No match data provided."
-
-        if not match_data.get("teammates"):
-            return "Error: Teammates data missing."
-
-        # Build prompts
+    async def _make_api_request(self, match_data: dict) -> dict | None:
+        """Make API request to AI service."""
         user_prompt = self._build_user_prompt(match_data)
 
-        # Build payload
         payload = {
             "model": self.model,
             "messages": [
@@ -340,7 +315,6 @@ Phân tích 5 người chơi. So sánh với đối thủ cùng lane, kiểm tra
             "Content-Type": "application/json",
         }
 
-        # Make API request
         try:
             response = await asyncio.to_thread(
                 requests.post,
@@ -351,50 +325,72 @@ Phân tích 5 người chơi. So sánh với đối thủ cùng lane, kiểm tra
 
             if response.status_code == 200:
                 result = response.json()
-                ai_content = result["choices"][0]["message"]["content"]
-                return self._format_discord_message(ai_content, match_data)
+                return result["choices"][0]["message"]["content"]
             else:
                 logger.error(f"API Error: {response.status_code} - {response.text}")
-                return f"⚠️ Lỗi API ({response.status_code}): {response.text}"
+                return None
 
         except Exception as e:
             logger.error(f"AI Generation Error: {e}")
-            return f"⚠️ Lỗi hệ thống AI: {str(e)}"
+            return None
 
-    def _format_discord_message(self, ai_content: str, match_data: dict) -> str:
+    async def analyze_match(self, match_data: dict) -> str:
         """
-        Parse AI JSON response and format it for Discord display.
+        Analyze match and return formatted string (legacy).
 
         Args:
-            ai_content: Raw JSON string from AI response
-            match_data: Original match data for context
+            match_data: Dictionary containing match information
 
         Returns:
             Formatted Discord message string
         """
+        if not self.api_key:
+            return "⚠️ Lỗi: Chưa cấu hình API Key."
+
+        if not match_data or not match_data.get("teammates"):
+            return "Error: Invalid match data."
+
+        ai_content = await self._make_api_request(match_data)
+
+        if not ai_content:
+            return "⚠️ Lỗi khi gọi AI API."
+
+        return self._format_discord_message(ai_content, match_data)
+
+    async def analyze_match_structured(self, match_data: dict) -> dict | None:
+        """
+        Analyze match and return structured dict (for Embeds).
+
+        Args:
+            match_data: Dictionary containing match information
+
+        Returns:
+            Dictionary with players analysis or None on error
+        """
+        if not self.api_key:
+            logger.error("API Key not configured")
+            return None
+
+        if not match_data or not match_data.get("teammates"):
+            logger.error("Invalid match data")
+            return None
+
+        ai_content = await self._make_api_request(match_data)
+
+        if not ai_content:
+            return None
+
+        return self._parse_ai_response(ai_content)
+
+    def _format_discord_message(self, ai_content: str, match_data: dict) -> str:
+        """Format AI response for Discord display (legacy)."""
         try:
-            # Clean up potential markdown code blocks
-            content = ai_content.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
+            parsed = self._parse_ai_response(ai_content)
+            if not parsed:
+                return f"📊 **Phân tích trận đấu:**\n\n{ai_content}"
 
-            # Parse JSON
-            data = json.loads(content)
+            players = parsed.get("players", [])
 
-            # Handle both old format (array) and new format ({players: array})
-            if isinstance(data, list):
-                players = data
-            elif isinstance(data, dict) and "players" in data:
-                players = data["players"]
-            else:
-                players = []
-
-            # Build header
             win_status = "🏆 **THẮNG**" if match_data.get("win") else "💀 **THUA**"
             duration = match_data.get("gameDurationMinutes", 0)
 
@@ -406,7 +402,6 @@ Phân tích 5 người chơi. So sánh với đối thủ cùng lane, kiểm tra
                 "━━━━━━━━━━━━━━━━━━━━━━",
             ]
 
-            # Build player analysis sections
             for p in players:
                 score = p.get("score", 0)
                 emoji = self._get_score_emoji(score)
@@ -431,9 +426,6 @@ Phân tích 5 người chơi. So sánh với đối thủ cùng lane, kiểm tra
 
             return "\n".join(lines)
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI JSON: {e}")
-            return f"📊 **Phân tích trận đấu:**\n\n{ai_content}"
         except Exception as e:
             logger.error(f"Error formatting Discord message: {e}")
             return f"⚠️ Lỗi format: {str(e)}\n\nRaw output:\n{ai_content}"

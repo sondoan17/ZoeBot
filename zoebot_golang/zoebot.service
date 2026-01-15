@@ -1,0 +1,23 @@
+[Unit]
+Description=ZoeBot Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/zoebot/zoebot_golang
+ExecStart=/home/ubuntu/zoebot/zoebot_golang/zoebot
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment file
+EnvironmentFile=/home/ubuntu/zoebot/zoebot_golang/.env
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
