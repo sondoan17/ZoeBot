@@ -267,6 +267,7 @@ func (b *Bot) handleTrack(s *discordgo.Session, i *discordgo.InteractionCreate) 
 
 	// Add to tracking
 	b.trackedPlayers.Set(puuid, &storage.TrackedPlayer{
+		PUUID:       puuid,
 		LastMatchID: lastMatchID,
 		ChannelID:   i.ChannelID,
 		Name:        riotID,
@@ -539,6 +540,7 @@ func (b *Bot) handleComponentInteraction(s *discordgo.Session, i *discordgo.Inte
 		}
 
 		b.trackedPlayers.Set(puuid, &storage.TrackedPlayer{
+			PUUID:       puuid,
 			LastMatchID: lastMatchID,
 			ChannelID:   channelID,
 			Name:        riotID,

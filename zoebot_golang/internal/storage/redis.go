@@ -16,6 +16,7 @@ import (
 
 // TrackedPlayer represents a player being tracked for match notifications.
 type TrackedPlayer struct {
+	PUUID       string `json:"puuid"`
 	LastMatchID string `json:"last_match_id"`
 	ChannelID   string `json:"channel_id"`
 	Name        string `json:"name"`
