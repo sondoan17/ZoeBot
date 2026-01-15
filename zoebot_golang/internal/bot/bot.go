@@ -448,33 +448,30 @@ func (b *Bot) handleAnalyze(s *discordgo.Session, i *discordgo.InteractionCreate
 	embed = embeds.CompactAnalysis(analysisResult.Players, matchData)
 
 	// Create buttons
-	components := []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{
-					Label:    "👤 Xem chi tiết từng người",
-					Style:    discordgo.SecondaryButton,
-					CustomID: fmt.Sprintf("detail_%s_%s", matchID, puuid),
-				},
-				discordgo.Button{
-					Label:    "🔗 Copy Match ID",
-					Style:    discordgo.SecondaryButton,
-					CustomID: fmt.Sprintf("copy_%s", matchID),
-				},
-			},
+	buttons := []discordgo.MessageComponent{
+		discordgo.Button{
+			Label:    "👤 Xem chi tiết từng người",
+			Style:    discordgo.SecondaryButton,
+			CustomID: fmt.Sprintf("detail_%s_%s", matchID, puuid),
+		},
+		discordgo.Button{
+			Label:    "🔗 Copy Match ID",
+			Style:    discordgo.SecondaryButton,
+			CustomID: fmt.Sprintf("copy_%s", matchID),
 		},
 	}
 
 	// Check if not tracked and add track button
 	if _, ok := b.trackedPlayers.Get(puuid); !ok {
-		components[0].(discordgo.ActionsRow).Components = append(
-			components[0].(discordgo.ActionsRow).Components,
-			discordgo.Button{
-				Label:    "📌 Track người chơi này",
-				Style:    discordgo.PrimaryButton,
-				CustomID: fmt.Sprintf("track_%s_%s", riotID, i.ChannelID),
-			},
-		)
+		buttons = append(buttons, discordgo.Button{
+			Label:    "📌 Track người chơi này",
+			Style:    discordgo.PrimaryButton,
+			CustomID: fmt.Sprintf("track_%s_%s", riotID, i.ChannelID),
+		})
+	}
+
+	components := []discordgo.MessageComponent{
+		discordgo.ActionsRow{Components: buttons},
 	}
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
