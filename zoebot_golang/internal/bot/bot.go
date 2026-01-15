@@ -16,15 +16,23 @@ import (
 	"github.com/zoebot/internal/storage"
 )
 
+// AnalysisCache stores analysis results for button interactions.
+type AnalysisCache struct {
+	Players   []ai.PlayerAnalysis
+	MatchData *riot.ParsedMatchData
+}
+
 // Bot represents the Discord bot.
 type Bot struct {
-	session        *discordgo.Session
-	cfg            *config.Config
-	riotClient     *riot.Client
-	aiClient       *ai.Client
-	trackedPlayers *storage.TrackedPlayersStore
-	analyzedMatches map[string][]string // matchID -> []channelID
+	session         *discordgo.Session
+	cfg             *config.Config
+	riotClient      *riot.Client
+	aiClient        *ai.Client
+	trackedPlayers  *storage.TrackedPlayersStore
+	analyzedMatches map[string][]string       // matchID -> []channelID
+	analysisCache   map[string]*AnalysisCache // matchID -> analysis result
 	analyzesMu      sync.RWMutex
+	cacheMu         sync.RWMutex
 	stopPolling     chan struct{}
 	commands        []*discordgo.ApplicationCommand
 }
@@ -55,6 +63,7 @@ func New(cfg *config.Config) (*Bot, error) {
 		aiClient:        ai.NewClient(cfg),
 		trackedPlayers:  trackedPlayers,
 		analyzedMatches: make(map[string][]string),
+		analysisCache:   make(map[string]*AnalysisCache),
 		stopPolling:     make(chan struct{}),
 	}
 
@@ -444,6 +453,9 @@ func (b *Bot) handleAnalyze(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
+	// Cache analysis result for button interactions
+	b.cacheAnalysis(matchID, analysisResult.Players, matchData)
+
 	// Create embed
 	embed = embeds.CompactAnalysis(analysisResult.Players, matchData)
 
@@ -485,6 +497,9 @@ func (b *Bot) handleComponentInteraction(s *discordgo.Session, i *discordgo.Inte
 	customID := i.MessageComponentData().CustomID
 
 	switch {
+	case strings.HasPrefix(customID, "detail_"), strings.HasPrefix(customID, "full_"):
+		b.handleDetailButton(s, i, customID)
+
 	case strings.HasPrefix(customID, "copy_"):
 		matchID := strings.TrimPrefix(customID, "copy_")
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -535,6 +550,57 @@ func (b *Bot) handleComponentInteraction(s *discordgo.Session, i *discordgo.Inte
 			},
 		})
 	}
+}
+
+// handleDetailButton handles detail/full analysis button clicks.
+func (b *Bot) handleDetailButton(s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+	// Parse customID: detail_matchID_puuid or full_matchID_puuid
+	var matchID string
+	if strings.HasPrefix(customID, "detail_") {
+		matchID = strings.TrimPrefix(customID, "detail_")
+	} else {
+		matchID = strings.TrimPrefix(customID, "full_")
+	}
+
+	// Remove puuid suffix (format: VN2_xxx_puuid)
+	parts := strings.Split(matchID, "_")
+	if len(parts) >= 2 {
+		// Reconstruct matchID (VN2_xxx format)
+		matchID = parts[0] + "_" + parts[1]
+	}
+
+	// Get cached analysis
+	cache := b.getAnalysisCache(matchID)
+	if cache == nil {
+		embed := embeds.Error("Dữ liệu phân tích đã hết hạn. Vui lòng dùng `/analyze` để phân tích lại.", "")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Embeds: []*discordgo.MessageEmbed{embed},
+				Flags:  discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Create embeds for each player
+	var playerEmbeds []*discordgo.MessageEmbed
+	for _, p := range cache.Players {
+		playerEmbeds = append(playerEmbeds, embeds.PlayerAnalysisEmbed(p, cache.MatchData))
+	}
+
+	// Discord allows max 10 embeds per message, split if needed
+	if len(playerEmbeds) > 10 {
+		playerEmbeds = playerEmbeds[:10]
+	}
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: playerEmbeds,
+			Flags:  discordgo.MessageFlagsEphemeral,
+		},
+	})
 }
 
 // pollMatches runs the background task to check for new matches.
@@ -661,6 +727,9 @@ func (b *Bot) checkPlayerMatch(puuid string, data *storage.TrackedPlayer) {
 		return
 	}
 
+	// Cache analysis result for button interactions
+	b.cacheAnalysis(latestMatchID, analysisResult.Players, matchData)
+
 	// Create embed with analysis
 	embed = embeds.CompactAnalysis(analysisResult.Players, matchData)
 
@@ -711,4 +780,30 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// cacheAnalysis stores analysis result for later button interactions.
+func (b *Bot) cacheAnalysis(matchID string, players []ai.PlayerAnalysis, matchData *riot.ParsedMatchData) {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+
+	b.analysisCache[matchID] = &AnalysisCache{
+		Players:   players,
+		MatchData: matchData,
+	}
+
+	// Cleanup old entries (keep max 20)
+	if len(b.analysisCache) > 20 {
+		for k := range b.analysisCache {
+			delete(b.analysisCache, k)
+			break
+		}
+	}
+}
+
+// getAnalysisCache retrieves cached analysis result.
+func (b *Bot) getAnalysisCache(matchID string) *AnalysisCache {
+	b.cacheMu.RLock()
+	defer b.cacheMu.RUnlock()
+	return b.analysisCache[matchID]
 }
