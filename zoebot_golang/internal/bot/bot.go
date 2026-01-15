@@ -495,6 +495,7 @@ func (b *Bot) handleAnalyze(s *discordgo.Session, i *discordgo.InteractionCreate
 // handleComponentInteraction handles button/component interactions.
 func (b *Bot) handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	customID := i.MessageComponentData().CustomID
+	log.Printf("Button clicked: %s", customID)
 
 	switch {
 	case strings.HasPrefix(customID, "detail_"), strings.HasPrefix(customID, "full_"):
@@ -554,6 +555,8 @@ func (b *Bot) handleComponentInteraction(s *discordgo.Session, i *discordgo.Inte
 
 // handleDetailButton handles detail/full analysis button clicks.
 func (b *Bot) handleDetailButton(s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+	log.Printf("handleDetailButton called with customID: %s", customID)
+
 	// Parse customID: detail_matchID_puuid or full_matchID_puuid
 	var matchID string
 	if strings.HasPrefix(customID, "detail_") {
@@ -569,19 +572,27 @@ func (b *Bot) handleDetailButton(s *discordgo.Session, i *discordgo.InteractionC
 		matchID = parts[0] + "_" + parts[1]
 	}
 
+	log.Printf("Looking up cache for matchID: %s", matchID)
+
 	// Get cached analysis
 	cache := b.getAnalysisCache(matchID)
 	if cache == nil {
+		log.Printf("Cache miss for matchID: %s", matchID)
 		embed := embeds.Error("Dữ liệu phân tích đã hết hạn. Vui lòng dùng `/analyze` để phân tích lại.", "")
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
 				Embeds: []*discordgo.MessageEmbed{embed},
 				Flags:  discordgo.MessageFlagsEphemeral,
 			},
 		})
+		if err != nil {
+			log.Printf("Error responding to interaction: %v", err)
+		}
 		return
 	}
+
+	log.Printf("Cache hit! Players count: %d", len(cache.Players))
 
 	// Create embeds for each player
 	var playerEmbeds []*discordgo.MessageEmbed
@@ -594,13 +605,16 @@ func (b *Bot) handleDetailButton(s *discordgo.Session, i *discordgo.InteractionC
 		playerEmbeds = playerEmbeds[:10]
 	}
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Embeds: playerEmbeds,
 			Flags:  discordgo.MessageFlagsEphemeral,
 		},
 	})
+	if err != nil {
+		log.Printf("Error responding with player embeds: %v", err)
+	}
 }
 
 // pollMatches runs the background task to check for new matches.
@@ -791,6 +805,8 @@ func (b *Bot) cacheAnalysis(matchID string, players []ai.PlayerAnalysis, matchDa
 		Players:   players,
 		MatchData: matchData,
 	}
+
+	log.Printf("Cached analysis for matchID: %s (total cached: %d)", matchID, len(b.analysisCache))
 
 	// Cleanup old entries (keep max 20)
 	if len(b.analysisCache) > 20 {
