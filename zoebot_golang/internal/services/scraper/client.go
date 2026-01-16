@@ -27,46 +27,46 @@ func NewClient(redis *storage.RedisClient) *Client {
 	}
 }
 
-// GetCounters returns a list of counter champions.
-func (c *Client) GetCounters(champion, lane string) ([]*CounterStats, error) {
+// GetCounters returns counter data including best and worst picks.
+func (c *Client) GetCounters(champion, lane string) (*CounterData, error) {
 	// Normalize inputs
 	normChamp := normalizeChampionName(champion)
 	normLane := normalizeLane(lane)
 
-	// Redis Key: counter:v3:{champ}:{lane}
-	cacheKey := fmt.Sprintf("counter:v3:%s:%s", normChamp, normLane)
+	// Redis Key: counter:v4:{champ}:{lane}
+	cacheKey := fmt.Sprintf("counter:v4:%s:%s", normChamp, normLane)
 
 	// 1. Check Cache
 	if c.redis != nil {
 		if val, err := c.redis.Get(cacheKey); err == nil && val != "" {
-			var stats []*CounterStats
-			if err := json.Unmarshal([]byte(val), &stats); err == nil {
+			var data CounterData
+			if err := json.Unmarshal([]byte(val), &data); err == nil {
 				log.Printf("Counter cache hit for %s %s", champion, lane)
-				return stats, nil
+				return &data, nil
 			}
 		}
 	}
 
-	// 2. Scrape from CounterStats.net (static HTML, scrapable)
+	// 2. Scrape from CounterStats.net
 	url := fmt.Sprintf("https://counterstats.net/league-of-legends/%s", normChamp)
 	log.Printf("Scraping counters from %s", url)
 
-	stats, err := c.scrapeCounterStats(url, normLane)
+	data, err := c.scrapeCounterStats(url, normLane)
 	if err != nil {
 		return nil, err
 	}
 
 	// 3. Save to Cache
-	if c.redis != nil && len(stats) > 0 {
-		data, _ := json.Marshal(stats)
-		c.redis.Set(cacheKey, string(data))
+	if c.redis != nil && (len(data.BestPicks) > 0 || len(data.WorstPicks) > 0) {
+		jsonData, _ := json.Marshal(data)
+		c.redis.Set(cacheKey, string(jsonData))
 	}
 
-	return stats, nil
+	return data, nil
 }
 
 // scrapeCounterStats scrapes counter data from counterstats.net
-func (c *Client) scrapeCounterStats(url, lane string) ([]*CounterStats, error) {
+func (c *Client) scrapeCounterStats(url, lane string) (*CounterData, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -90,14 +90,11 @@ func (c *Client) scrapeCounterStats(url, lane string) ([]*CounterStats, error) {
 		return nil, err
 	}
 
-	var results []*CounterStats
+	result := &CounterData{}
 	targetLane := strings.ToLower(lane)
 
 	// Find the correct lane section
-	// CounterStats.net structure: div.champ-box__wrap contains lane sections
-	// Each section has h2 with lane info and champ-box with Best Picks
 	doc.Find("div.champ-box__wrap").Each(func(i int, section *goquery.Selection) {
-		// Check if this section matches the requested lane
 		h2Text := strings.ToLower(section.Find("h2").First().Text())
 
 		// If lane is specified, only parse that lane's section
@@ -107,32 +104,40 @@ func (c *Client) scrapeCounterStats(url, lane string) ([]*CounterStats, error) {
 			}
 		}
 
-		// Find "Best Picks Against" section (counters)
+		// Already found data for this lane
+		if len(result.BestPicks) > 0 || len(result.WorstPicks) > 0 {
+			return
+		}
+
+		result.Lane = detectLaneFromHeader(h2Text)
+
+		// Parse each champ-box (Best Picks and Worst Picks)
 		section.Find("div.champ-box").Each(func(j int, box *goquery.Selection) {
 			h3Text := strings.ToLower(box.Find("h3").Text())
-			if !strings.Contains(h3Text, "best picks") {
+			isBestPicks := strings.Contains(h3Text, "best picks")
+			isWorstPicks := strings.Contains(h3Text, "worst picks")
+
+			if !isBestPicks && !isWorstPicks {
 				return
 			}
 
-			// Parse each counter champion row
+			var picks []*CounterStats
 			box.Find("a.champ-box__row").Each(func(k int, row *goquery.Selection) {
-				if len(results) >= 10 {
+				if len(picks) >= 5 {
 					return
 				}
 
-				// Check if row is visible (not display:none)
+				// Check if row is visible
 				style, exists := row.Attr("style")
 				if exists && strings.Contains(style, "display:none") {
 					return
 				}
 
-				// Extract champion name
 				champName := strings.TrimSpace(row.Find("span.champion").Text())
 				if champName == "" {
 					return
 				}
 
-				// Extract win rate
 				winRate := strings.TrimSpace(row.Find("span.win span.b").Text())
 				if winRate == "" {
 					winRate = strings.TrimSpace(row.Find("span.b").Text())
@@ -141,24 +146,26 @@ func (c *Client) scrapeCounterStats(url, lane string) ([]*CounterStats, error) {
 					winRate = winRate + "%"
 				}
 
-				// Extract lane from section header
-				detectedLane := detectLaneFromHeader(h2Text)
-
-				results = append(results, &CounterStats{
+				picks = append(picks, &CounterStats{
 					ChampionName: champName,
 					WinRate:      winRate,
-					Matches:      "-", // CounterStats doesn't show match count directly
-					Lane:         detectedLane,
+					Lane:         result.Lane,
 				})
 			})
+
+			if isBestPicks {
+				result.BestPicks = picks
+			} else if isWorstPicks {
+				result.WorstPicks = picks
+			}
 		})
 	})
 
-	if len(results) == 0 {
+	if len(result.BestPicks) == 0 && len(result.WorstPicks) == 0 {
 		return nil, fmt.Errorf("no counters found for this champion")
 	}
 
-	return results, nil
+	return result, nil
 }
 
 func detectLaneFromHeader(headerText string) string {
@@ -175,15 +182,13 @@ func detectLaneFromHeader(headerText string) string {
 	case strings.Contains(headerText, "support"):
 		return "Support"
 	}
-	return "All"
+	return ""
 }
 
 func normalizeChampionName(name string) string {
 	name = strings.ToLower(name)
 	name = strings.TrimSpace(name)
 
-	// Handle special character cases for URL
-	// CounterStats uses hyphenated names: "aurelion-sol", "lee-sin"
 	specialCases := map[string]string{
 		"aurelionsol":  "aurelion-sol",
 		"aurelion sol": "aurelion-sol",
@@ -228,7 +233,6 @@ func normalizeChampionName(name string) string {
 		"master yi":    "master-yi",
 	}
 
-	// Remove common punctuation first
 	cleanName := strings.ReplaceAll(name, "'", "")
 	cleanName = strings.ReplaceAll(cleanName, ".", "")
 	cleanName = strings.ReplaceAll(cleanName, " ", "")
@@ -240,7 +244,6 @@ func normalizeChampionName(name string) string {
 		return mapped
 	}
 
-	// Default: just return lowercase without spaces
 	return regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(name, "")
 }
 

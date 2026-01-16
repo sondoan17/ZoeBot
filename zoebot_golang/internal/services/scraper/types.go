@@ -4,11 +4,17 @@ package scraper
 type CounterStats struct {
 	ChampionName string `json:"champion_name"`
 	WinRate      string `json:"win_rate"` // e.g., "54.5%"
-	Matches      string `json:"matches"`  // e.g., "1,200"
 	Lane         string `json:"lane"`
+}
+
+// CounterData contains both best and worst picks.
+type CounterData struct {
+	BestPicks  []*CounterStats `json:"best_picks"`  // Champions that counter the target
+	WorstPicks []*CounterStats `json:"worst_picks"` // Champions weak against the target
+	Lane       string          `json:"lane"`
 }
 
 // Scraper defines the interface for fetching counter data.
 type Scraper interface {
-	GetCounters(champion, lane string) ([]*CounterStats, error)
+	GetCounters(champion, lane string) (*CounterData, error)
 }

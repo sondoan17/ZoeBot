@@ -23,7 +23,7 @@ func (b *Bot) handleCounter(s *discordgo.Session, i *discordgo.InteractionCreate
 	})
 
 	// Call scraper
-	counters, err := b.scraperClient.GetCounters(champion, lane)
+	data, err := b.scraperClient.GetCounters(champion, lane)
 	if err != nil {
 		embed := embeds.Error("Không tìm thấy dữ liệu khắc chế! Hãy kiểm tra lại tên tướng.", fmt.Sprintf("Lỗi: %v", err))
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -32,7 +32,7 @@ func (b *Bot) handleCounter(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	if len(counters) == 0 {
+	if len(data.BestPicks) == 0 && len(data.WorstPicks) == 0 {
 		embed := embeds.Error(fmt.Sprintf("Không có dữ liệu cho **%s** %s.", champion, lane), "")
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Embeds: &[]*discordgo.MessageEmbed{embed},
@@ -40,46 +40,59 @@ func (b *Bot) handleCounter(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	// Build Embed with cleaner format
+	// Build Embed
 	champDisplay := strings.Title(strings.ToLower(champion))
-	title := fmt.Sprintf("⚔️ Khắc chế %s", champDisplay)
-
-	// Determine lane display
-	laneDisplay := ""
-	if lane != "" {
-		laneDisplay = strings.Title(strings.ToLower(lane))
-	} else if len(counters) > 0 && counters[0].Lane != "" && counters[0].Lane != "All" {
-		laneDisplay = counters[0].Lane
+	title := fmt.Sprintf("⚔️ Matchup: %s", champDisplay)
+	if data.Lane != "" {
+		title += fmt.Sprintf(" (%s)", data.Lane)
 	}
 
 	embed := &discordgo.MessageEmbed{
 		Title: title,
-		Color: 0xE74C3C, // Modern red
+		Color: 0xE74C3C,
 		Thumbnail: &discordgo.MessageEmbedThumbnail{
 			URL: embeds.GetChampionIcon(champion),
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "📊 Dữ liệu từ CounterStats.net",
+			Text: "📊 CounterStats.net",
 		},
 	}
 
-	// Build description with formatted list
-	var sb strings.Builder
-	if laneDisplay != "" {
-		sb.WriteString(fmt.Sprintf("**Lane:** %s\n\n", laneDisplay))
-	}
-
-	// Create a clean table format in description
-	for k, c := range counters {
+	// Build Best Picks column (counters the target)
+	var bestPicksStr strings.Builder
+	for k, c := range data.BestPicks {
 		if k >= 5 {
 			break
 		}
-		// Format: 🥇 Anivia — 56% WR
-		medal := getMedal(k)
-		sb.WriteString(fmt.Sprintf("%s **%s** — `%s`\n", medal, c.ChampionName, c.WinRate))
+		bestPicksStr.WriteString(fmt.Sprintf("%s %s `%s`\n", getMedal(k), c.ChampionName, c.WinRate))
 	}
 
-	embed.Description = sb.String()
+	// Build Worst Picks column (weak against target)
+	var worstPicksStr strings.Builder
+	for k, c := range data.WorstPicks {
+		if k >= 5 {
+			break
+		}
+		worstPicksStr.WriteString(fmt.Sprintf("%s %s `%s`\n", getMedal(k), c.ChampionName, c.WinRate))
+	}
+
+	embed.Fields = []*discordgo.MessageEmbedField{}
+
+	if bestPicksStr.Len() > 0 {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   "✅ Khắc chế " + champDisplay,
+			Value:  bestPicksStr.String(),
+			Inline: true,
+		})
+	}
+
+	if worstPicksStr.Len() > 0 {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   "❌ Bị " + champDisplay + " khắc chế",
+			Value:  worstPicksStr.String(),
+			Inline: true,
+		})
+	}
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
