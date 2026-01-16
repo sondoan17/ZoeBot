@@ -62,12 +62,13 @@ func main() {
 		log.Fatalf("Config invalid: %v", err)
 	}
 
-	// Load game data (items, perks, and perk styles)
+	// Load game data (items, perks, perk styles, and champions)
 	execPath, _ := os.Executable()
 	dataDir := filepath.Join(filepath.Dir(execPath), "data")
 	itemPath := filepath.Join(dataDir, "item.json")
 	perkPath := filepath.Join(dataDir, "perk.json")
 	perkStylePath := filepath.Join(dataDir, "perk-style.json")
+	championPath := filepath.Join(dataDir, "champion-summary.json")
 
 	// Try multiple paths for data files
 	if _, err := os.Stat(itemPath); os.IsNotExist(err) {
@@ -79,6 +80,9 @@ func main() {
 	}
 	if _, err := os.Stat(perkStylePath); os.IsNotExist(err) {
 		perkStylePath = "data/perk-style.json"
+	}
+	if _, err := os.Stat(championPath); os.IsNotExist(err) {
+		championPath = "data/champion-summary.json"
 	}
 
 	if items, err := data.LoadItems(itemPath); err != nil {
@@ -95,6 +99,11 @@ func main() {
 		log.Printf("Warning: Could not load perk style data: %v", err)
 	} else {
 		log.Printf("Loaded %d perk styles from %s", len(styles), perkStylePath)
+	}
+	if champions, err := data.LoadChampions(championPath); err != nil {
+		log.Printf("Warning: Could not load champion data: %v", err)
+	} else {
+		log.Printf("Loaded %d champions from %s", len(champions), championPath)
 	}
 
 	// Create bot

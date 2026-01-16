@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/zoebot/internal/data"
 	"github.com/zoebot/internal/services/ai"
 	"github.com/zoebot/internal/services/riot"
 )
@@ -23,7 +24,12 @@ var DDragonVersion = "16.1.1"
 
 // GetChampionIcon returns the champion icon URL.
 func GetChampionIcon(championName string) string {
-	// Handle special champion names
+	// Try to get from loaded champion data first
+	if url := data.GetChampionIconURL(championName); url != "" {
+		return url
+	}
+
+	// Fallback to Data Dragon
 	nameMapping := map[string]string{
 		"Wukong":   "MonkeyKing",
 		"Cho'Gath": "Chogath",

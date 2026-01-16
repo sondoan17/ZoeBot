@@ -48,7 +48,20 @@ var (
 	perkStyleData     map[int]string // id -> name
 	perkStyleDataOnce sync.Once
 	perkStyleDataErr  error
+
+	championData     map[string]ChampionEntry // alias (lowercase) -> champion
+	championDataOnce sync.Once
+	championDataErr  error
 )
+
+// ChampionEntry represents a champion from champion-summary.json
+type ChampionEntry struct {
+	ID                 int      `json:"id"`
+	Name               string   `json:"name"`
+	Alias              string   `json:"alias"`
+	SquarePortraitPath string   `json:"squarePortraitPath"`
+	Roles              []string `json:"roles"`
+}
 
 // LoadItems loads item data from the JSON file (array format)
 func LoadItems(filePath string) (map[int]ItemEntry, error) {
@@ -201,4 +214,63 @@ func GetItemIconURL(itemID string, version string) string {
 		version = "14.24.1" // fallback version
 	}
 	return fmt.Sprintf("https://ddragon.leagueoflegends.com/cdn/%s/img/item/%s.png", version, itemID)
+}
+
+// LoadChampions loads champion data from the JSON file
+func LoadChampions(filePath string) (map[string]ChampionEntry, error) {
+	championDataOnce.Do(func() {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			championDataErr = err
+			return
+		}
+
+		var champions []ChampionEntry
+		if err := json.Unmarshal(data, &champions); err != nil {
+			championDataErr = err
+			return
+		}
+
+		championData = make(map[string]ChampionEntry)
+		for _, champ := range champions {
+			// Store by lowercase alias for easy lookup
+			key := strings.ToLower(champ.Alias)
+			championData[key] = champ
+			// Also store by lowercase name
+			nameKey := strings.ToLower(champ.Name)
+			if nameKey != key {
+				championData[nameKey] = champ
+			}
+		}
+	})
+
+	return championData, championDataErr
+}
+
+// GetChampionIconURL returns the CDN URL for a champion icon
+func GetChampionIconURL(championName string) string {
+	if championData == nil {
+		return ""
+	}
+
+	// Normalize name for lookup
+	key := strings.ToLower(championName)
+	key = strings.ReplaceAll(key, " ", "")
+	key = strings.ReplaceAll(key, "'", "")
+
+	if champ, ok := championData[key]; ok && champ.SquarePortraitPath != "" {
+		// Convert path to Community Dragon URL
+		iconPath := champ.SquarePortraitPath
+		iconPath = strings.TrimPrefix(iconPath, "/lol-game-data/assets/v1/")
+		return "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/" + strings.ToLower(iconPath)
+	}
+
+	// Try original name
+	if champ, ok := championData[strings.ToLower(championName)]; ok && champ.SquarePortraitPath != "" {
+		iconPath := champ.SquarePortraitPath
+		iconPath = strings.TrimPrefix(iconPath, "/lol-game-data/assets/v1/")
+		return "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/" + strings.ToLower(iconPath)
+	}
+
+	return ""
 }
