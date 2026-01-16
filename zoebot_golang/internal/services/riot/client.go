@@ -192,10 +192,18 @@ func (c *Client) GetSummonerByPUUID(puuid string) (*SummonerDTO, error) {
 		}
 	}
 
+	// Use platform URL, fallback to match URL if not set
+	baseURL := c.baseURLPlatform
+	if baseURL == "" {
+		baseURL = "https://vn2.api.riotgames.com"
+	}
+
 	reqURL := fmt.Sprintf("%s/lol/summoner/v4/summoners/by-puuid/%s",
-		c.baseURLPlatform,
+		baseURL,
 		puuid,
 	)
+
+	log.Printf("Fetching summoner from: %s", reqURL)
 
 	body, err := c.doRequest(reqURL)
 	if err != nil {
@@ -230,10 +238,18 @@ func (c *Client) GetLeagueEntries(summonerID string) ([]LeagueEntryDTO, error) {
 		}
 	}
 
+	// Use platform URL, fallback if not set
+	baseURL := c.baseURLPlatform
+	if baseURL == "" {
+		baseURL = "https://vn2.api.riotgames.com"
+	}
+
 	reqURL := fmt.Sprintf("%s/lol/league/v4/entries/by-summoner/%s",
-		c.baseURLPlatform,
+		baseURL,
 		summonerID,
 	)
+
+	log.Printf("Fetching league entries from: %s", reqURL)
 
 	body, err := c.doRequest(reqURL)
 	if err != nil {

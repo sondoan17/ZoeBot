@@ -2,6 +2,7 @@ package bot
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -41,6 +42,7 @@ func (b *Bot) handleLeaderboard(s *discordgo.Session, i *discordgo.InteractionCr
 
 			info, err := b.riotClient.GetPlayerRankInfo(puuid, name)
 			if err != nil {
+				log.Printf("Failed to get rank info for %s: %v", name, err)
 				return // Skip failed players
 			}
 
