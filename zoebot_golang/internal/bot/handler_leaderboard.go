@@ -30,12 +30,23 @@ func (b *Bot) handleLeaderboard(s *discordgo.Session, i *discordgo.InteractionCr
 		return
 	}
 
+	// Debug: log tracked players
+	for _, p := range players {
+		log.Printf("Tracked player: Name=%s, PUUID=%s, ChannelID=%s", p.Name, p.PUUID, p.ChannelID)
+	}
+
 	// Fetch rank info for all players concurrently
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var rankInfos []*riot.PlayerRankInfo
 
 	for _, player := range players {
+		// Skip if PUUID is empty
+		if player.PUUID == "" {
+			log.Printf("Skipping player %s: empty PUUID", player.Name)
+			continue
+		}
+
 		wg.Add(1)
 		go func(puuid, name string) {
 			defer wg.Done()
@@ -137,6 +148,10 @@ func buildLeaderboardEmbed(players []*riot.PlayerRankInfo, channelName string) *
 func formatRank(tier, rank string, lp int) string {
 	if tier == "UNRANKED" || tier == "" {
 		return "Unranked"
+	}
+
+	if tier == "N/A" {
+		return "Chưa xác định"
 	}
 
 	// Format tier name (capitalize first letter only)

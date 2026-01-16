@@ -224,32 +224,32 @@ func (c *Client) GetSummonerByPUUID(puuid string) (*SummonerDTO, error) {
 	return &summoner, nil
 }
 
-// GetLeagueEntries gets ranked entries for a summoner.
-func (c *Client) GetLeagueEntries(summonerID string) ([]LeagueEntryDTO, error) {
-	// Check cache (shorter TTL for rank data - 10 min)
-	cacheKey := fmt.Sprintf("league:%s", summonerID)
+// GetLeagueEntriesByPUUID gets ranked entries directly by PUUID.
+func (c *Client) GetLeagueEntriesByPUUID(puuid string) ([]LeagueEntryDTO, error) {
+	// Check cache
+	cacheKey := fmt.Sprintf("league:puuid:%s", puuid)
 	if c.redisClient != nil {
 		if cached, err := c.redisClient.Get(cacheKey); err == nil && cached != "" {
 			var entries []LeagueEntryDTO
 			if err := json.Unmarshal([]byte(cached), &entries); err == nil {
-				log.Printf("League cache hit for %s", summonerID)
+				log.Printf("League cache hit for PUUID %s", puuid[:8])
 				return entries, nil
 			}
 		}
 	}
 
-	// Use platform URL, fallback if not set
+	// Use platform URL
 	baseURL := c.baseURLPlatform
 	if baseURL == "" {
 		baseURL = "https://vn2.api.riotgames.com"
 	}
 
-	reqURL := fmt.Sprintf("%s/lol/league/v4/entries/by-summoner/%s",
+	reqURL := fmt.Sprintf("%s/lol/league/v4/entries/by-puuid/%s",
 		baseURL,
-		summonerID,
+		puuid,
 	)
 
-	log.Printf("Fetching league entries from: %s", reqURL)
+	log.Printf("Fetching league entries by PUUID from: %s", reqURL)
 
 	body, err := c.doRequest(reqURL)
 	if err != nil {
@@ -271,20 +271,25 @@ func (c *Client) GetLeagueEntries(summonerID string) ([]LeagueEntryDTO, error) {
 }
 
 // GetPlayerRankInfo gets complete rank info for a player.
+// Uses direct PUUID to League API endpoint.
 func (c *Client) GetPlayerRankInfo(puuid, name string) (*PlayerRankInfo, error) {
-	// Get summoner ID first
-	summoner, err := c.GetSummonerByPUUID(puuid)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get summoner: %w", err)
+	if puuid == "" {
+		return nil, fmt.Errorf("empty PUUID")
 	}
 
-	// Get league entries
-	entries, err := c.GetLeagueEntries(summoner.ID)
+	// Use direct PUUID endpoint (no need for Summoner API)
+	entries, err := c.GetLeagueEntriesByPUUID(puuid)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get league entries: %w", err)
+		log.Printf("League API failed for %s: %v", name, err)
+		// Fallback to match history
+		return c.buildRankInfoFromMatches(puuid, name)
 	}
 
-	// Find RANKED_SOLO_5x5 entry (priority) or RANKED_FLEX_SR
+	return c.buildRankInfoFromLeague(puuid, name, entries), nil
+}
+
+// buildRankInfoFromLeague builds rank info from league entries.
+func (c *Client) buildRankInfoFromLeague(puuid, name string, entries []LeagueEntryDTO) *PlayerRankInfo {
 	var soloEntry, flexEntry *LeagueEntryDTO
 	for i := range entries {
 		switch entries[i].QueueType {
@@ -295,24 +300,20 @@ func (c *Client) GetPlayerRankInfo(puuid, name string) (*PlayerRankInfo, error) 
 		}
 	}
 
-	// Use solo queue, fallback to flex
 	entry := soloEntry
 	if entry == nil {
 		entry = flexEntry
 	}
 
-	// Build PlayerRankInfo
 	info := &PlayerRankInfo{
 		Name:  name,
 		PUUID: puuid,
 	}
 
 	if entry == nil {
-		// Unranked
 		info.Tier = "UNRANKED"
-		info.Rank = ""
 		info.TierValue = 0
-		return info, nil
+		return info
 	}
 
 	info.Tier = entry.Tier
@@ -326,6 +327,59 @@ func (c *Client) GetPlayerRankInfo(puuid, name string) (*PlayerRankInfo, error) 
 
 	if info.TotalGames > 0 {
 		info.WinRate = float64(entry.Wins) / float64(info.TotalGames) * 100
+	}
+
+	return info
+}
+
+// buildRankInfoFromMatches calculates stats from recent match history.
+func (c *Client) buildRankInfoFromMatches(puuid, name string) (*PlayerRankInfo, error) {
+	// Get recent matches (last 20)
+	matchIDs, err := c.GetMatchIDsByPUUID(puuid, 20)
+	if err != nil || len(matchIDs) == 0 {
+		return &PlayerRankInfo{
+			Name:      name,
+			PUUID:     puuid,
+			Tier:      "UNRANKED",
+			TierValue: 0,
+		}, nil
+	}
+
+	wins := 0
+	totalGames := 0
+
+	// Check up to 10 matches for performance
+	checkCount := min(10, len(matchIDs))
+	for i := 0; i < checkCount; i++ {
+		match, err := c.GetMatchDetails(matchIDs[i])
+		if err != nil {
+			continue
+		}
+
+		// Find player in match
+		for _, p := range match.Info.Participants {
+			if p.PUUID == puuid {
+				totalGames++
+				if p.Win {
+					wins++
+				}
+				break
+			}
+		}
+	}
+
+	info := &PlayerRankInfo{
+		Name:       name,
+		PUUID:      puuid,
+		Tier:       "N/A", // Can't determine tier from matches
+		Wins:       wins,
+		Losses:     totalGames - wins,
+		TotalGames: totalGames,
+		TierValue:  wins * 10, // Sort by wins
+	}
+
+	if totalGames > 0 {
+		info.WinRate = float64(wins) / float64(totalGames) * 100
 	}
 
 	return info, nil
