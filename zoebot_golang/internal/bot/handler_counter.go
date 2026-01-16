@@ -23,8 +23,6 @@ func (b *Bot) handleCounter(s *discordgo.Session, i *discordgo.InteractionCreate
 	})
 
 	// Call scraper
-	// Note: normalize is done inside scraper client, but we can do it here if needed.
-	// Scraper handles normalization.
 	counters, err := b.scraperClient.GetCounters(champion, lane)
 	if err != nil {
 		embed := embeds.Error("Không tìm thấy dữ liệu khắc chế! Hãy kiểm tra lại tên tướng.", fmt.Sprintf("Lỗi: %v", err))
@@ -42,57 +40,65 @@ func (b *Bot) handleCounter(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	// Build Embed
-	title := fmt.Sprintf("⚔️ Kèo khắc chế: %s", strings.Title(strings.ToLower(champion)))
+	// Build Embed with cleaner format
+	champDisplay := strings.Title(strings.ToLower(champion))
+	title := fmt.Sprintf("⚔️ Khắc chế %s", champDisplay)
+
+	// Determine lane display
+	laneDisplay := ""
 	if lane != "" {
-		title += fmt.Sprintf(" (%s)", strings.Title(strings.ToLower(lane)))
+		laneDisplay = strings.Title(strings.ToLower(lane))
+	} else if len(counters) > 0 && counters[0].Lane != "" && counters[0].Lane != "All" {
+		laneDisplay = counters[0].Lane
 	}
 
-	description := fmt.Sprintf("Dưới đây là Top 5 tướng khắc chế **%s** mạnh nhất (theo Winrate).", strings.Title(strings.ToLower(champion)))
-
 	embed := &discordgo.MessageEmbed{
-		Title:       title,
-		Description: description,
-		Color:       0xFF0000, // Red for danger/counter
+		Title: title,
+		Color: 0xE74C3C, // Modern red
 		Thumbnail: &discordgo.MessageEmbedThumbnail{
 			URL: embeds.GetChampionIcon(champion),
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "Dữ liệu từ U.GG • Tự động cập nhật",
+			Text: "📊 Dữ liệu từ CounterStats.net",
 		},
 	}
 
-	// Create table-like content using fields
-	// Name | Winrate | Matches
-	var names, wrs, matches []string
+	// Build description with formatted list
+	var sb strings.Builder
+	if laneDisplay != "" {
+		sb.WriteString(fmt.Sprintf("**Lane:** %s\n\n", laneDisplay))
+	}
 
+	// Create a clean table format in description
 	for k, c := range counters {
-		if k >= 5 { break }
-		// c.ChampionName might be "Kennen"
-		names = append(names, fmt.Sprintf("**%d. %s**", k+1, c.ChampionName))
-		wrs = append(wrs, fmt.Sprintf("`%s`", c.WinRate))
-		matches = append(matches, fmt.Sprintf("%s trận", c.Matches))
+		if k >= 5 {
+			break
+		}
+		// Format: 🥇 Anivia — 56% WR
+		medal := getMedal(k)
+		sb.WriteString(fmt.Sprintf("%s **%s** — `%s`\n", medal, c.ChampionName, c.WinRate))
 	}
 
-	embed.Fields = []*discordgo.MessageEmbedField{
-		{
-			Name:   "Tướng",
-			Value:  strings.Join(names, "\n"),
-			Inline: true,
-		},
-		{
-			Name:   "Tỉ lệ thắng",
-			Value:  strings.Join(wrs, "\n"),
-			Inline: true,
-		},
-		{
-			Name:   "Số trận",
-			Value:  strings.Join(matches, "\n"),
-			Inline: true,
-		},
-	}
+	embed.Description = sb.String()
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
 	})
+}
+
+func getMedal(index int) string {
+	switch index {
+	case 0:
+		return "🥇"
+	case 1:
+		return "🥈"
+	case 2:
+		return "🥉"
+	case 3:
+		return "`4.`"
+	case 4:
+		return "`5.`"
+	default:
+		return "•"
+	}
 }
