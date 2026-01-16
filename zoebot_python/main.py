@@ -95,10 +95,10 @@ async def check_matches():
 
             # If new match found
             if latest_match_id != old_match_id:
-                bot.tracked_players[puuid]["last_match_id"] = latest_match_id
-                bot.save_tracked_players()
-
                 if old_match_id is None:
+                    # First time tracking - just initialize
+                    bot.tracked_players[puuid]["last_match_id"] = latest_match_id
+                    bot.save_tracked_players()
                     logger.info(f"📝 Initialized {data['name']} with match {latest_match_id}")
                     continue
 
@@ -118,13 +118,11 @@ async def check_matches():
                 # Type narrowing for text channels
                 assert isinstance(channel, (discord.TextChannel, discord.Thread, discord.DMChannel))
 
-                # Find all tracked players in this match
-                players_in_match = [
-                    p_data["name"]
-                    for p_puuid, p_data in bot.tracked_players.items()
-                    if p_data["channel_id"] == channel_id
-                    and p_data["last_match_id"] == latest_match_id
-                ]
+                # Find all tracked players in this match (current player + others with same match)
+                players_in_match = [data["name"]]  # Current player
+                for p_puuid, p_data in bot.tracked_players.items():
+                    if p_puuid != puuid and p_data["channel_id"] == channel_id and p_data["last_match_id"] == latest_match_id:
+                        players_in_match.append(p_data["name"])
 
                 players_mention = ", ".join(f"**{name}**" for name in players_in_match)
 
@@ -168,6 +166,10 @@ async def check_matches():
                     )
 
                     await channel.send(embed=embed, view=view)
+
+                    # Only update last_match_id AFTER successful analysis
+                    bot.tracked_players[puuid]["last_match_id"] = latest_match_id
+                    bot.save_tracked_players()
 
                     if latest_match_id not in bot.analyzed_matches:
                         bot.analyzed_matches[latest_match_id] = []
