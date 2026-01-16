@@ -256,3 +256,66 @@ type GoldDiff struct {
 	Diff         int    `json:"diff"`
 	Position     string `json:"position"`
 }
+
+// SummonerDTO represents summoner data from Riot API.
+type SummonerDTO struct {
+	ID            string `json:"id"`
+	AccountID     string `json:"accountId"`
+	PUUID         string `json:"puuid"`
+	ProfileIconID int    `json:"profileIconId"`
+	SummonerLevel int64  `json:"summonerLevel"`
+}
+
+// LeagueEntryDTO represents ranked league entry from Riot API.
+type LeagueEntryDTO struct {
+	LeagueID     string `json:"leagueId"`
+	SummonerID   string `json:"summonerId"`
+	QueueType    string `json:"queueType"` // RANKED_SOLO_5x5, RANKED_FLEX_SR
+	Tier         string `json:"tier"`      // IRON, BRONZE, SILVER, GOLD, PLATINUM, EMERALD, DIAMOND, MASTER, GRANDMASTER, CHALLENGER
+	Rank         string `json:"rank"`      // I, II, III, IV
+	LeaguePoints int    `json:"leaguePoints"`
+	Wins         int    `json:"wins"`
+	Losses       int    `json:"losses"`
+	HotStreak    bool   `json:"hotStreak"`
+	Veteran      bool   `json:"veteran"`
+	FreshBlood   bool   `json:"freshBlood"`
+	Inactive     bool   `json:"inactive"`
+}
+
+// PlayerRankInfo represents processed rank info for leaderboard.
+type PlayerRankInfo struct {
+	Name       string  // Riot ID (Name#Tag)
+	PUUID      string
+	Tier       string  // DIAMOND, PLATINUM...
+	Rank       string  // I, II, III, IV
+	LP         int
+	Wins       int
+	Losses     int
+	WinRate    float64
+	TotalGames int
+	HotStreak  bool
+	TierValue  int // For sorting: Challenger=9, Unranked=0
+}
+
+// TierOrder maps tier names to numeric values for sorting.
+var TierOrder = map[string]int{
+	"CHALLENGER":  10,
+	"GRANDMASTER": 9,
+	"MASTER":      8,
+	"DIAMOND":     7,
+	"EMERALD":     6,
+	"PLATINUM":    5,
+	"GOLD":        4,
+	"SILVER":      3,
+	"BRONZE":      2,
+	"IRON":        1,
+	"UNRANKED":    0,
+}
+
+// RankOrder maps rank to numeric value for sorting within tier.
+var RankOrder = map[string]int{
+	"I":   4,
+	"II":  3,
+	"III": 2,
+	"IV":  1,
+}

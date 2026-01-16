@@ -173,6 +173,10 @@ func (b *Bot) registerCommands() error {
 				},
 			},
 		},
+		{
+			Name:        "leaderboard",
+			Description: "Xem bảng xếp hạng người chơi đang theo dõi",
+		},
 	}
 
 	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))
@@ -208,6 +212,8 @@ func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.Interaction
 			b.handleAnalyze(s, i)
 		case "counter":
 			b.handleCounter(s, i)
+		case "leaderboard":
+			b.handleLeaderboard(s, i)
 		}
 	} else if i.Type == discordgo.InteractionMessageComponent {
 		log.Printf("MessageComponent interaction detected")

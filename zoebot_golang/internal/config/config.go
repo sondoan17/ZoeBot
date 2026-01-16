@@ -16,9 +16,10 @@ type Config struct {
 	DiscordToken string
 
 	// Riot API
-	RiotAPIKey        string
+	RiotAPIKey         string
 	RiotBaseURLAccount string
 	RiotBaseURLMatch   string
+	RiotBaseURLPlatform string // For summoner/league APIs (vn2.api.riotgames.com)
 
 	// AI / LLM API
 	AIAPIKey string
@@ -47,9 +48,10 @@ func Load() (*Config, error) {
 		DiscordToken: os.Getenv("DISCORD_TOKEN"),
 
 		// Riot API
-		RiotAPIKey:         os.Getenv("RIOT_API_KEY"),
-		RiotBaseURLAccount: getEnvOrDefault("RIOT_BASE_URL_ACCOUNT", "https://asia.api.riotgames.com"),
-		RiotBaseURLMatch:   getEnvOrDefault("RIOT_BASE_URL_MATCH", "https://sea.api.riotgames.com"),
+		RiotAPIKey:          os.Getenv("RIOT_API_KEY"),
+		RiotBaseURLAccount:  getEnvOrDefault("RIOT_BASE_URL_ACCOUNT", "https://asia.api.riotgames.com"),
+		RiotBaseURLMatch:    getEnvOrDefault("RIOT_BASE_URL_MATCH", "https://sea.api.riotgames.com"),
+		RiotBaseURLPlatform: getEnvOrDefault("RIOT_BASE_URL_PLATFORM", "https://vn2.api.riotgames.com"),
 
 		// AI / LLM API
 		AIAPIKey: os.Getenv("CLIPROXY_API_KEY"),

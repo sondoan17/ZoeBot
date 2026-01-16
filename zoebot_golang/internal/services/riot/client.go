@@ -20,12 +20,13 @@ import (
 
 // Client is a client for Riot Games API.
 type Client struct {
-	apiKey         string
-	baseURLAccount string
-	baseURLMatch   string
-	httpClient     *http.Client
-	championData   map[string]ChampionInfo
-	redisClient    *storage.RedisClient
+	apiKey          string
+	baseURLAccount  string
+	baseURLMatch    string
+	baseURLPlatform string // For summoner/league APIs
+	httpClient      *http.Client
+	championData    map[string]ChampionInfo
+	redisClient     *storage.RedisClient
 }
 
 // NewClient creates a new Riot API client.
@@ -40,9 +41,10 @@ func NewClient(cfg *config.Config, redisClient *storage.RedisClient) *Client {
 	}
 
 	c := &Client{
-		apiKey:         cfg.RiotAPIKey,
-		baseURLAccount: cfg.RiotBaseURLAccount,
-		baseURLMatch:   cfg.RiotBaseURLMatch,
+		apiKey:          cfg.RiotAPIKey,
+		baseURLAccount:  cfg.RiotBaseURLAccount,
+		baseURLMatch:    cfg.RiotBaseURLMatch,
+		baseURLPlatform: cfg.RiotBaseURLPlatform,
 		httpClient: &http.Client{
 			Timeout:   15 * time.Second,
 			Transport: transport,
@@ -175,6 +177,142 @@ func (c *Client) GetMatchIDsByPUUID(puuid string, count int) ([]string, error) {
 	}
 
 	return matchIDs, nil
+}
+
+// GetSummonerByPUUID gets summoner data from PUUID.
+func (c *Client) GetSummonerByPUUID(puuid string) (*SummonerDTO, error) {
+	// Check cache
+	cacheKey := fmt.Sprintf("summoner:%s", puuid)
+	if c.redisClient != nil {
+		if cached, err := c.redisClient.Get(cacheKey); err == nil && cached != "" {
+			var summoner SummonerDTO
+			if err := json.Unmarshal([]byte(cached), &summoner); err == nil {
+				return &summoner, nil
+			}
+		}
+	}
+
+	reqURL := fmt.Sprintf("%s/lol/summoner/v4/summoners/by-puuid/%s",
+		c.baseURLPlatform,
+		puuid,
+	)
+
+	body, err := c.doRequest(reqURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var summoner SummonerDTO
+	if err := json.Unmarshal(body, &summoner); err != nil {
+		return nil, fmt.Errorf("failed to parse summoner response: %w", err)
+	}
+
+	// Cache for 1 hour (summoner data rarely changes)
+	if c.redisClient != nil && summoner.ID != "" {
+		data, _ := json.Marshal(summoner)
+		c.redisClient.Set(cacheKey, string(data))
+	}
+
+	return &summoner, nil
+}
+
+// GetLeagueEntries gets ranked entries for a summoner.
+func (c *Client) GetLeagueEntries(summonerID string) ([]LeagueEntryDTO, error) {
+	// Check cache (shorter TTL for rank data - 10 min)
+	cacheKey := fmt.Sprintf("league:%s", summonerID)
+	if c.redisClient != nil {
+		if cached, err := c.redisClient.Get(cacheKey); err == nil && cached != "" {
+			var entries []LeagueEntryDTO
+			if err := json.Unmarshal([]byte(cached), &entries); err == nil {
+				log.Printf("League cache hit for %s", summonerID)
+				return entries, nil
+			}
+		}
+	}
+
+	reqURL := fmt.Sprintf("%s/lol/league/v4/entries/by-summoner/%s",
+		c.baseURLPlatform,
+		summonerID,
+	)
+
+	body, err := c.doRequest(reqURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []LeagueEntryDTO
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse league entries: %w", err)
+	}
+
+	// Cache for 10 minutes
+	if c.redisClient != nil {
+		data, _ := json.Marshal(entries)
+		c.redisClient.Set(cacheKey, string(data))
+	}
+
+	return entries, nil
+}
+
+// GetPlayerRankInfo gets complete rank info for a player.
+func (c *Client) GetPlayerRankInfo(puuid, name string) (*PlayerRankInfo, error) {
+	// Get summoner ID first
+	summoner, err := c.GetSummonerByPUUID(puuid)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get summoner: %w", err)
+	}
+
+	// Get league entries
+	entries, err := c.GetLeagueEntries(summoner.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get league entries: %w", err)
+	}
+
+	// Find RANKED_SOLO_5x5 entry (priority) or RANKED_FLEX_SR
+	var soloEntry, flexEntry *LeagueEntryDTO
+	for i := range entries {
+		switch entries[i].QueueType {
+		case "RANKED_SOLO_5x5":
+			soloEntry = &entries[i]
+		case "RANKED_FLEX_SR":
+			flexEntry = &entries[i]
+		}
+	}
+
+	// Use solo queue, fallback to flex
+	entry := soloEntry
+	if entry == nil {
+		entry = flexEntry
+	}
+
+	// Build PlayerRankInfo
+	info := &PlayerRankInfo{
+		Name:  name,
+		PUUID: puuid,
+	}
+
+	if entry == nil {
+		// Unranked
+		info.Tier = "UNRANKED"
+		info.Rank = ""
+		info.TierValue = 0
+		return info, nil
+	}
+
+	info.Tier = entry.Tier
+	info.Rank = entry.Rank
+	info.LP = entry.LeaguePoints
+	info.Wins = entry.Wins
+	info.Losses = entry.Losses
+	info.TotalGames = entry.Wins + entry.Losses
+	info.HotStreak = entry.HotStreak
+	info.TierValue = TierOrder[entry.Tier]*100 + RankOrder[entry.Rank]*10 + entry.LeaguePoints/10
+
+	if info.TotalGames > 0 {
+		info.WinRate = float64(entry.Wins) / float64(info.TotalGames) * 100
+	}
+
+	return info, nil
 }
 
 // GetMatchDetails gets full details of a match.
