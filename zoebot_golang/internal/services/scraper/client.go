@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/zoebot/internal/data"
 	"github.com/zoebot/internal/storage"
 )
 
@@ -483,11 +484,11 @@ func (c *Client) extractRunes(doc *goquery.Document, result *BuildData) {
 		treeID := extractIDFromURL(src)
 		if treeID > 0 {
 			if result.PrimaryTree == "" {
-				if name, ok := RuneTreeNames[treeID]; ok {
+				if name := data.GetPerkStyleName(treeID); name != "" {
 					result.PrimaryTree = name
 				}
 			} else if result.SecondaryTree == "" {
-				if name, ok := RuneTreeNames[treeID]; ok {
+				if name := data.GetPerkStyleName(treeID); name != "" {
 					result.SecondaryTree = name
 				}
 			}
@@ -518,14 +519,18 @@ func (c *Client) extractRunes(doc *goquery.Document, result *BuildData) {
 		if i >= 4 {
 			break
 		}
-		if name, ok := RuneNames[id]; ok {
+		if name := data.GetPerkName(id); name != "" {
 			result.PrimaryRunes = append(result.PrimaryRunes, name)
+			// Save keystone ID (first rune)
+			if i == 0 {
+				result.KeystoneID = id
+			}
 		}
 	}
 
 	// Secondary runes: next 2
 	for i := 4; i < len(primaryRuneIDs) && i < 6; i++ {
-		if name, ok := RuneNames[primaryRuneIDs[i]]; ok {
+		if name := data.GetPerkName(primaryRuneIDs[i]); name != "" {
 			secondaryRuneIDs = append(secondaryRuneIDs, primaryRuneIDs[i])
 			result.SecondaryRunes = append(result.SecondaryRunes, name)
 		}
@@ -536,7 +541,7 @@ func (c *Client) extractRunes(doc *goquery.Document, result *BuildData) {
 		if i >= 3 {
 			break
 		}
-		if name, ok := StatShardNames[id]; ok {
+		if name := data.GetPerkName(id); name != "" {
 			result.StatShards = append(result.StatShards, name)
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/zoebot/internal/bot"
 	"github.com/zoebot/internal/config"
+	"github.com/zoebot/internal/data"
 	"github.com/zoebot/pkg/healthcheck"
 )
 
@@ -58,6 +60,35 @@ func main() {
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Config invalid: %v", err)
+	}
+
+	// Load game data (items, perks, and perk styles)
+	execPath, _ := os.Executable()
+	dataDir := filepath.Join(filepath.Dir(execPath), "data")
+	itemPath := filepath.Join(dataDir, "item.json")
+	perkPath := filepath.Join(dataDir, "perk.json")
+	perkStylePath := filepath.Join(dataDir, "perk-style.json")
+
+	// Try multiple paths for data files
+	if _, err := os.Stat(itemPath); os.IsNotExist(err) {
+		// Try relative to working directory
+		itemPath = "data/item.json"
+	}
+	if _, err := os.Stat(perkPath); os.IsNotExist(err) {
+		perkPath = "data/perk.json"
+	}
+	if _, err := os.Stat(perkStylePath); os.IsNotExist(err) {
+		perkStylePath = "data/perk-style.json"
+	}
+
+	if _, err := data.LoadItems(itemPath); err != nil {
+		log.Printf("Warning: Could not load item data: %v", err)
+	}
+	if _, err := data.LoadPerks(perkPath); err != nil {
+		log.Printf("Warning: Could not load perk data: %v", err)
+	}
+	if _, err := data.LoadPerkStyles(perkStylePath); err != nil {
+		log.Printf("Warning: Could not load perk style data: %v", err)
 	}
 
 	// Create bot
