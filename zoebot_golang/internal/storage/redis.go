@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -131,7 +132,28 @@ func (s *TrackedPlayersStore) Load() error {
 		return err
 	}
 
-	s.players = players
+	// Fix old data: ensure PUUID field is properly set
+	fixedPlayers := make(map[string]*TrackedPlayer)
+	for key, player := range players {
+		// If key contains "#", it's a Name (old format), not PUUID
+		if strings.Contains(key, "#") {
+			// Old format: key is Name, PUUID might be in struct or empty
+			if player.PUUID != "" {
+				fixedPlayers[player.PUUID] = player
+			} else {
+				// Skip invalid entries without PUUID
+				log.Printf("Skipping player %s: no PUUID in old data format", key)
+			}
+		} else {
+			// New format: key is PUUID
+			if player.PUUID == "" {
+				player.PUUID = key
+			}
+			fixedPlayers[key] = player
+		}
+	}
+
+	s.players = fixedPlayers
 	log.Printf("Loaded %d players", len(s.players))
 	return nil
 }
