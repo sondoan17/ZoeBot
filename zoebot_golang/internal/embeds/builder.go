@@ -19,7 +19,7 @@ const (
 )
 
 // DDragonVersion is the Data Dragon version for assets.
-var DDragonVersion = "14.10.1"
+var DDragonVersion = "16.1.1"
 
 // GetChampionIcon returns the champion icon URL.
 func GetChampionIcon(championName string) string {

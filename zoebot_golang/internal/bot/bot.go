@@ -177,6 +177,31 @@ func (b *Bot) registerCommands() error {
 			Name:        "leaderboard",
 			Description: "Xem bảng xếp hạng người chơi đang theo dõi",
 		},
+		{
+			Name:        "build",
+			Description: "Xem build tướng (runes, items) từ OP.GG",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "champion",
+					Description: "Tên tướng (VD: Yasuo, Lee Sin)",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "role",
+					Description: "Vị trí (top, jungle, mid, adc, support)",
+					Required:    true,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "Top", Value: "top"},
+						{Name: "Jungle", Value: "jungle"},
+						{Name: "Mid", Value: "mid"},
+						{Name: "ADC", Value: "adc"},
+						{Name: "Support", Value: "support"},
+					},
+				},
+			},
+		},
 	}
 
 	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))
@@ -196,8 +221,6 @@ func (b *Bot) registerCommands() error {
 
 // onInteractionCreate handles slash command interactions.
 func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	log.Printf("Interaction received: Type=%d", i.Type)
-	
 	if i.Type == discordgo.InteractionApplicationCommand {
 		switch i.ApplicationCommandData().Name {
 		case "ping":
@@ -214,9 +237,10 @@ func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.Interaction
 			b.handleCounter(s, i)
 		case "leaderboard":
 			b.handleLeaderboard(s, i)
+		case "build":
+			b.handleBuild(s, i)
 		}
 	} else if i.Type == discordgo.InteractionMessageComponent {
-		log.Printf("MessageComponent interaction detected")
 		b.handleComponentInteraction(s, i)
 	}
 }
@@ -528,7 +552,6 @@ func (b *Bot) handleAnalyze(s *discordgo.Session, i *discordgo.InteractionCreate
 // handleComponentInteraction handles button/component interactions.
 func (b *Bot) handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	customID := i.MessageComponentData().CustomID
-	log.Printf("Button clicked: %s", customID)
 
 	switch {
 	case strings.HasPrefix(customID, "detail_"), strings.HasPrefix(customID, "full_"):
@@ -589,8 +612,6 @@ func (b *Bot) handleComponentInteraction(s *discordgo.Session, i *discordgo.Inte
 
 // handleDetailButton handles detail/full analysis button clicks.
 func (b *Bot) handleDetailButton(s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	log.Printf("handleDetailButton called with customID: %s", customID)
-
 	// Parse customID: detail_matchID_puuid or full_matchID_puuid
 	var remainder string
 	if strings.HasPrefix(customID, "detail_") {
@@ -610,12 +631,9 @@ func (b *Bot) handleDetailButton(s *discordgo.Session, i *discordgo.InteractionC
 		matchID = remainder
 	}
 
-	log.Printf("Looking up cache for matchID: %s", matchID)
-
 	// Get cached analysis
 	cache := b.getAnalysisCache(matchID)
 	if cache == nil {
-		log.Printf("Cache miss for matchID: %s", matchID)
 		embed := embeds.Error("Dữ liệu phân tích đã hết hạn. Vui lòng dùng `/analyze` để phân tích lại.", "")
 		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -629,8 +647,6 @@ func (b *Bot) handleDetailButton(s *discordgo.Session, i *discordgo.InteractionC
 		}
 		return
 	}
-
-	log.Printf("Cache hit! Players count: %d", len(cache.Players))
 
 	// Create embeds for each player
 	var playerEmbeds []*discordgo.MessageEmbed
@@ -843,8 +859,6 @@ func (b *Bot) cacheAnalysis(matchID string, players []ai.PlayerAnalysis, matchDa
 		Players:   players,
 		MatchData: matchData,
 	}
-
-	log.Printf("Cached analysis for matchID: %s (total cached: %d)", matchID, len(b.analysisCache))
 
 	// Cleanup old entries (keep max 20)
 	if len(b.analysisCache) > 20 {
