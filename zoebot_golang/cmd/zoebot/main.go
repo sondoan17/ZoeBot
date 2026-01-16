@@ -81,14 +81,20 @@ func main() {
 		perkStylePath = "data/perk-style.json"
 	}
 
-	if _, err := data.LoadItems(itemPath); err != nil {
+	if items, err := data.LoadItems(itemPath); err != nil {
 		log.Printf("Warning: Could not load item data: %v", err)
+	} else {
+		log.Printf("Loaded %d items from %s", len(items), itemPath)
 	}
-	if _, err := data.LoadPerks(perkPath); err != nil {
+	if perks, err := data.LoadPerks(perkPath); err != nil {
 		log.Printf("Warning: Could not load perk data: %v", err)
+	} else {
+		log.Printf("Loaded %d perks from %s", len(perks), perkPath)
 	}
-	if _, err := data.LoadPerkStyles(perkStylePath); err != nil {
+	if styles, err := data.LoadPerkStyles(perkStylePath); err != nil {
 		log.Printf("Warning: Could not load perk style data: %v", err)
+	} else {
+		log.Printf("Loaded %d perk styles from %s", len(styles), perkStylePath)
 	}
 
 	// Create bot

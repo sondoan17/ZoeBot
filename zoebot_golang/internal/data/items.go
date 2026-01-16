@@ -5,22 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
 
-// ItemData represents the structure of item.json
-type ItemData struct {
-	Type    string                `json:"type"`
-	Version string                `json:"version"`
-	Data    map[string]ItemDetail `json:"data"`
-}
-
-// ItemDetail represents a single item's data
-type ItemDetail struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Plaintext   string `json:"plaintext"`
+// ItemEntry represents a single item from the JSON array
+type ItemEntry struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	IconPath string `json:"iconPath"`
 }
 
 // PerkData represents a single perk/rune
@@ -43,7 +37,7 @@ type PerkStyle struct {
 }
 
 var (
-	itemData     *ItemData
+	itemData     map[int]ItemEntry // id -> item
 	itemDataOnce sync.Once
 	itemDataErr  error
 
@@ -56,8 +50,8 @@ var (
 	perkStyleDataErr  error
 )
 
-// LoadItems loads item data from the JSON file
-func LoadItems(filePath string) (*ItemData, error) {
+// LoadItems loads item data from the JSON file (array format)
+func LoadItems(filePath string) (map[int]ItemEntry, error) {
 	itemDataOnce.Do(func() {
 		data, err := os.ReadFile(filePath)
 		if err != nil {
@@ -65,11 +59,15 @@ func LoadItems(filePath string) (*ItemData, error) {
 			return
 		}
 
-		itemData = &ItemData{}
-		if err := json.Unmarshal(data, itemData); err != nil {
+		var items []ItemEntry
+		if err := json.Unmarshal(data, &items); err != nil {
 			itemDataErr = err
-			itemData = nil
 			return
+		}
+
+		itemData = make(map[int]ItemEntry)
+		for _, item := range items {
+			itemData[item.ID] = item
 		}
 	})
 
@@ -106,7 +104,13 @@ func GetItemName(itemID string) string {
 		return "Item #" + itemID
 	}
 
-	if item, ok := itemData.Data[itemID]; ok {
+	// Convert string ID to int
+	id, err := strconv.Atoi(itemID)
+	if err != nil {
+		return "Item #" + itemID
+	}
+
+	if item, ok := itemData[id]; ok {
 		return item.Name
 	}
 
@@ -127,11 +131,8 @@ func GetPerkName(perkID int) string {
 }
 
 // GetItems returns all loaded items
-func GetItems() map[string]ItemDetail {
-	if itemData == nil {
-		return nil
-	}
-	return itemData.Data
+func GetItems() map[int]ItemEntry {
+	return itemData
 }
 
 // GetPerks returns all loaded perks
