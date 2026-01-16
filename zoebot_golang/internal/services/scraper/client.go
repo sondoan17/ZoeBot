@@ -358,8 +358,8 @@ func (c *Client) GetBuild(champion, role string) (*BuildData, error) {
 		return nil, fmt.Errorf("invalid role: %s (use: top, jungle, mid, adc, support)", role)
 	}
 
-	// Redis Key: build:v1:{champ}:{role}
-	cacheKey := fmt.Sprintf("build:v1:%s:%s", normChamp, normRole)
+	// Redis Key: build:v2:{champ}:{role} (v2 = Vietnamese data)
+	cacheKey := fmt.Sprintf("build:v2:%s:%s", normChamp, normRole)
 
 	// 1. Check Cache
 	if c.redis != nil {

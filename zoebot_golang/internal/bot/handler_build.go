@@ -50,13 +50,13 @@ func (b *Bot) handleBuild(s *discordgo.Session, i *discordgo.InteractionCreate) 
 
 // createBuildEmbed creates a Discord embed for build data.
 func createBuildEmbed(data *scraper.BuildData) *discordgo.MessageEmbed {
-	// Role Vietnamese mapping
-	roleNames := map[string]string{
-		"top":     "Trên",
-		"jungle":  "Rừng",
-		"mid":     "Giữa",
-		"adc":     "Xạ Thủ",
-		"support": "Hỗ Trợ",
+	// Role display names (keep English, capitalize)
+	roleDisplayNames := map[string]string{
+		"top":     "TOP",
+		"jungle":  "JUNGLE",
+		"mid":     "MID",
+		"adc":     "ADC",
+		"support": "SUPPORT",
 	}
 
 	roleEmojis := map[string]string{
@@ -72,16 +72,16 @@ func createBuildEmbed(data *scraper.BuildData) *discordgo.MessageEmbed {
 	if roleEmoji == "" {
 		roleEmoji = "🎮"
 	}
-	roleName := roleNames[roleKey]
+	roleName := roleDisplayNames[roleKey]
 	if roleName == "" {
-		roleName = data.Role
+		roleName = strings.ToUpper(data.Role)
 	}
 
 	// Title
 	title := fmt.Sprintf("⚔️ BUILD: %s %s %s",
 		strings.ToUpper(data.Champion),
 		roleEmoji,
-		strings.ToUpper(roleName),
+		roleName,
 	)
 
 	embed := &discordgo.MessageEmbed{
@@ -195,9 +195,9 @@ func buildRuneDisplay(data *scraper.BuildData) string {
 func buildItemDisplay(data *scraper.BuildData) string {
 	var lines []string
 
-	// Starter Items
+	// Starter Items (use + since bought together)
 	if len(data.StarterItems) > 0 {
-		starters := formatItemIDsWithLinks(data.StarterItems, data.PatchVersion)
+		starters := formatStarterItems(data.StarterItems, data.PatchVersion)
 		lines = append(lines, fmt.Sprintf("**Khởi đầu:** %s", starters))
 	}
 
@@ -208,7 +208,7 @@ func buildItemDisplay(data *scraper.BuildData) string {
 		lines = append(lines, fmt.Sprintf("**Giày:** [%s](%s)", bootName, bootURL))
 	}
 
-	// Core Items
+	// Core Items (use → since built in sequence)
 	if len(data.CoreItems) > 0 {
 		coreNames := formatItemIDsWithLinks(data.CoreItems, data.PatchVersion)
 		lines = append(lines, fmt.Sprintf("**Cốt lõi:** %s", coreNames))
@@ -224,6 +224,17 @@ func buildItemDisplay(data *scraper.BuildData) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// formatStarterItems formats starter items with + separator (bought together).
+func formatStarterItems(itemIDs []string, patchVersion string) string {
+	var names []string
+	for _, id := range itemIDs {
+		name := getItemName(id)
+		url := gamedata.GetItemIconURL(id, patchVersion)
+		names = append(names, fmt.Sprintf("[%s](%s)", name, url))
+	}
+	return strings.Join(names, " + ")
 }
 
 // formatItemIDsWithLinks converts item IDs to display names with image links.
