@@ -93,14 +93,20 @@ func createBuildEmbed(data *scraper.BuildData) *discordgo.MessageEmbed {
 		Fields: make([]*discordgo.MessageEmbedField, 0),
 	}
 
-	// Set keystone rune as author icon if available
+	// Set keystone rune as thumbnail if available, otherwise use champion icon
 	if data.KeystoneID > 0 {
 		if keystoneURL := gamedata.GetPerkIconURL(data.KeystoneID); keystoneURL != "" {
-			// Use Author field for keystone icon (shows on the left of title)
-			embed.Author = &discordgo.MessageEmbedAuthor{
-				Name:    data.PrimaryRunes[0], // Keystone name
-				IconURL: keystoneURL,
+			embed.Thumbnail = &discordgo.MessageEmbedThumbnail{
+				URL: keystoneURL,
 			}
+		} else {
+			embed.Thumbnail = &discordgo.MessageEmbedThumbnail{
+				URL: embeds.GetChampionIcon(data.Champion),
+			}
+		}
+	} else {
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{
+			URL: embeds.GetChampionIcon(data.Champion),
 		}
 	}
 

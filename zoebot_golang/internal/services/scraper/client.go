@@ -358,8 +358,8 @@ func (c *Client) GetBuild(champion, role string) (*BuildData, error) {
 		return nil, fmt.Errorf("invalid role: %s (use: top, jungle, mid, adc, support)", role)
 	}
 
-	// Redis Key: build:v2:{champ}:{role} (v2 = Vietnamese data)
-	cacheKey := fmt.Sprintf("build:v2:%s:%s", normChamp, normRole)
+	// Redis Key: build:v3:{champ}:{role} (v3 = fixed duplicates)
+	cacheKey := fmt.Sprintf("build:v3:%s:%s", normChamp, normRole)
 
 	// 1. Check Cache
 	if c.redis != nil {
@@ -454,6 +454,7 @@ func (c *Client) extractRunes(doc *goquery.Document, result *BuildData) {
 	var primaryRuneIDs []int
 	var secondaryRuneIDs []int
 	var statShardIDs []int
+	seenRuneIDs := make(map[int]bool) // Track seen IDs to avoid duplicates
 
 	// Find all selected runes (opacity-100, not grayscale)
 	doc.Find("img[src*='/perk/']").Each(func(i int, s *goquery.Selection) {
@@ -473,7 +474,8 @@ func (c *Client) extractRunes(doc *goquery.Document, result *BuildData) {
 
 		src, _ := s.Attr("src")
 		runeID := extractIDFromURL(src)
-		if runeID > 0 {
+		if runeID > 0 && !seenRuneIDs[runeID] {
+			seenRuneIDs[runeID] = true
 			primaryRuneIDs = append(primaryRuneIDs, runeID)
 		}
 	})
@@ -496,6 +498,7 @@ func (c *Client) extractRunes(doc *goquery.Document, result *BuildData) {
 	})
 
 	// Find stat shards
+	seenShardIDs := make(map[int]bool)
 	doc.Find("img[src*='/perkShard/']").Each(func(i int, s *goquery.Selection) {
 		// Check if selected (has golden border)
 		imgClasses, _ := s.Attr("class")
@@ -508,7 +511,8 @@ func (c *Client) extractRunes(doc *goquery.Document, result *BuildData) {
 
 		src, _ := s.Attr("src")
 		shardID := extractIDFromURL(src)
-		if shardID > 0 {
+		if shardID > 0 && !seenShardIDs[shardID] {
+			seenShardIDs[shardID] = true
 			statShardIDs = append(statShardIDs, shardID)
 		}
 	})
@@ -609,9 +613,14 @@ func (c *Client) extractItems(doc *goquery.Document, result *BuildData) {
 		})
 
 		if strings.Contains(headerText, "starter") || strings.Contains(headerText, "khởi đầu") || strings.Contains(headerText, "start") {
-			// Starter items
-			for _, id := range tableItems {
-				result.StarterItems = append(result.StarterItems, fmt.Sprintf("%d", id))
+			// Starter items - only take first 2 items (main item + potion)
+			// Skip if we already have starter items (avoid duplicates from multiple tables)
+			if len(result.StarterItems) == 0 {
+				for _, id := range tableItems {
+					if len(result.StarterItems) < 2 {
+						result.StarterItems = append(result.StarterItems, fmt.Sprintf("%d", id))
+					}
+				}
 			}
 		} else if strings.Contains(headerText, "boot") || strings.Contains(headerText, "giày") {
 			// Boots
