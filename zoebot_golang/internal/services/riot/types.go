@@ -294,7 +294,8 @@ type PlayerRankInfo struct {
 	WinRate    float64
 	TotalGames int
 	HotStreak  bool
-	TierValue  int // For sorting: Challenger=9, Unranked=0
+	TierValue  int    // For sorting: Challenger=9, Unranked=0
+	QueueType  string // RANKED_SOLO_5x5, RANKED_FLEX_SR
 }
 
 // TierOrder maps tier names to numeric values for sorting.

@@ -97,17 +97,20 @@ func buildLeaderboardEmbed(players []*riot.PlayerRankInfo, channelName string) *
 	embed := &discordgo.MessageEmbed{
 		Title: "🏆 BẢNG XẾP HẠNG",
 		Color: 0xF1C40F, // Gold color
-		Footer: &discordgo.MessageEmbedFooter{
-			Text: "📊 Ranked Solo/Duo • Cache 10 phút",
-		},
 	}
 
 	if len(players) == 0 {
 		embed.Description = "Không có dữ liệu"
+		embed.Footer = &discordgo.MessageEmbedFooter{
+			Text: "📊 Cache 10 phút",
+		}
 		return embed
 	}
 
 	var sb strings.Builder
+
+	// Track queue types for footer
+	queueTypes := make(map[string]bool)
 
 	for idx, p := range players {
 		if idx >= 10 { // Max 10 players
@@ -119,6 +122,15 @@ func buildLeaderboardEmbed(players []*riot.PlayerRankInfo, channelName string) *
 
 		// Rank display
 		rankStr := formatRank(p.Tier, p.Rank, p.LP)
+
+		// Queue type indicator
+		queueIcon := ""
+		if p.QueueType == "RANKED_FLEX_SR" {
+			queueIcon = " 👥"
+			queueTypes["flex"] = true
+		} else if p.QueueType == "RANKED_SOLO_5x5" {
+			queueTypes["solo"] = true
+		}
 
 		// Winrate
 		wrStr := ""
@@ -134,12 +146,30 @@ func buildLeaderboardEmbed(players []*riot.PlayerRankInfo, channelName string) *
 			streakIcon = " 🔥"
 		}
 
-		// Format: 🥇 **Player#Tag** • Diamond II 75LP • 58.2% (142G) 🔥
+		// Format: 🥇 **Player#Tag**
+		// ┗ Diamond II 75LP • 58.2% (142G) 🔥 👥
 		sb.WriteString(fmt.Sprintf("%s **%s**\n", medal, p.Name))
-		sb.WriteString(fmt.Sprintf("┗ %s • `%s` (%dG)%s\n\n", rankStr, wrStr, p.TotalGames, streakIcon))
+		sb.WriteString(fmt.Sprintf("┗ %s • `%s` (%dG)%s%s\n\n", rankStr, wrStr, p.TotalGames, streakIcon, queueIcon))
 	}
 
 	embed.Description = sb.String()
+
+	// Build footer based on queue types found
+	footerText := "📊 "
+	if queueTypes["solo"] && queueTypes["flex"] {
+		footerText += "Solo/Duo & Flex"
+	} else if queueTypes["flex"] {
+		footerText += "Ranked Flex 👥"
+	} else if queueTypes["solo"] {
+		footerText += "Ranked Solo/Duo"
+	} else {
+		footerText += "Ranked"
+	}
+	footerText += " • Cache 10 phút"
+
+	embed.Footer = &discordgo.MessageEmbedFooter{
+		Text: footerText,
+	}
 
 	return embed
 }

@@ -300,6 +300,7 @@ func (c *Client) buildRankInfoFromLeague(puuid, name string, entries []LeagueEnt
 		}
 	}
 
+	// Prioritize solo queue, fallback to flex
 	entry := soloEntry
 	if entry == nil {
 		entry = flexEntry
@@ -312,6 +313,7 @@ func (c *Client) buildRankInfoFromLeague(puuid, name string, entries []LeagueEnt
 
 	if entry == nil {
 		info.Tier = "UNRANKED"
+		info.QueueType = ""
 		info.TierValue = 0
 		return info
 	}
@@ -323,6 +325,7 @@ func (c *Client) buildRankInfoFromLeague(puuid, name string, entries []LeagueEnt
 	info.Losses = entry.Losses
 	info.TotalGames = entry.Wins + entry.Losses
 	info.HotStreak = entry.HotStreak
+	info.QueueType = entry.QueueType
 	info.TierValue = TierOrder[entry.Tier]*100 + RankOrder[entry.Rank]*10 + entry.LeaguePoints/10
 
 	if info.TotalGames > 0 {

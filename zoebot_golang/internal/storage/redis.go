@@ -132,29 +132,26 @@ func (s *TrackedPlayersStore) Load() error {
 		return err
 	}
 
-	// Fix old data: ensure PUUID field is properly set
-	fixedPlayers := make(map[string]*TrackedPlayer)
-	for key, player := range players {
-		// If key contains "#", it's a Name (old format), not PUUID
-		if strings.Contains(key, "#") {
-			// Old format: key is Name, PUUID might be in struct or empty
-			if player.PUUID != "" {
-				fixedPlayers[player.PUUID] = player
-			} else {
-				// Skip invalid entries without PUUID
-				log.Printf("Skipping player %s: no PUUID in old data format", key)
-			}
-		} else {
-			// New format: key is PUUID
-			if player.PUUID == "" {
-				player.PUUID = key
-			}
-			fixedPlayers[key] = player
+	// Migrate: ensure PUUID field is set from map key
+	needsSave := false
+	for puuid, player := range players {
+		if player.PUUID == "" && !strings.Contains(puuid, "#") {
+			player.PUUID = puuid
+			needsSave = true
 		}
 	}
 
-	s.players = fixedPlayers
+	s.players = players
 	log.Printf("Loaded %d players", len(s.players))
+
+	// Auto-save migrated data
+	if needsSave {
+		log.Println("Migrating old player data format...")
+		s.mu.Unlock()
+		s.Save()
+		s.mu.Lock()
+	}
+
 	return nil
 }
 
@@ -185,6 +182,10 @@ func (s *TrackedPlayersStore) Get(puuid string) (*TrackedPlayer, bool) {
 
 // Set adds or updates a tracked player.
 func (s *TrackedPlayersStore) Set(puuid string, player *TrackedPlayer) {
+	// Ensure PUUID is always set in struct
+	if player.PUUID == "" {
+		player.PUUID = puuid
+	}
 	s.mu.Lock()
 	s.players[puuid] = player
 	s.mu.Unlock()
