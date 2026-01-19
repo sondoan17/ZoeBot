@@ -97,6 +97,33 @@ func (b *Bot) handleCounter(s *discordgo.Session, i *discordgo.InteractionCreate
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
 	})
+
+	// Save context for AI chat replies
+	if msg, err := s.InteractionResponse(i.Interaction); err == nil {
+		// Convert counter data to simple format for context
+		bestPicks := make([]map[string]string, 0)
+		for _, c := range data.BestPicks {
+			bestPicks = append(bestPicks, map[string]string{
+				"champion": c.ChampionName,
+				"winrate":  c.WinRate,
+			})
+		}
+		worstPicks := make([]map[string]string, 0)
+		for _, c := range data.WorstPicks {
+			worstPicks = append(worstPicks, map[string]string{
+				"champion": c.ChampionName,
+				"winrate":  c.WinRate,
+			})
+		}
+
+		contextData := map[string]interface{}{
+			"target_champion": champion,
+			"lane":            data.Lane,
+			"best_picks":      bestPicks,
+			"worst_picks":     worstPicks,
+		}
+		b.saveMessageContext(msg.ID, "counter", contextData)
+	}
 }
 
 func getMedal(index int) string {

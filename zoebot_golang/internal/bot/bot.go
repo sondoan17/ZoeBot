@@ -2,6 +2,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
 	"github.com/zoebot/internal/config"
 	"github.com/zoebot/internal/embeds"
 	"github.com/zoebot/internal/services/ai"
@@ -23,6 +25,13 @@ type AnalysisCache struct {
 	MatchData *riot.ParsedMatchData
 }
 
+// MessageContext stores context for AI chat replies.
+type MessageContext struct {
+	Type      string                 // "analysis", "build", "counter"
+	Data      map[string]interface{} // Context data
+	CreatedAt time.Time
+}
+
 // Bot represents the Discord bot.
 type Bot struct {
 	session         *discordgo.Session
@@ -31,10 +40,12 @@ type Bot struct {
 	aiClient        *ai.Client
 	scraperClient   *scraper.Client
 	trackedPlayers  *storage.TrackedPlayersStore
-	analyzedMatches map[string][]string       // matchID -> []channelID
-	analysisCache   map[string]*AnalysisCache // matchID -> analysis result
+	analyzedMatches map[string][]string        // matchID -> []channelID
+	analysisCache   map[string]*AnalysisCache  // matchID -> analysis result
+	messageContext  map[string]*MessageContext // messageID -> context for AI chat
 	analyzesMu      sync.RWMutex
 	cacheMu         sync.RWMutex
+	contextMu       sync.RWMutex
 	stopPolling     chan struct{}
 	commands        []*discordgo.ApplicationCommand
 }
@@ -47,7 +58,9 @@ func New(cfg *config.Config) (*Bot, error) {
 	}
 
 	// Set intents
-	session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages
+	session.Identify.Intents = discordgo.IntentsGuilds |
+		discordgo.IntentsGuildMessages |
+		discordgo.IntentsMessageContent
 
 	// Create Redis client and tracked players store
 	redisClient := storage.NewRedisClient(cfg)
@@ -67,12 +80,14 @@ func New(cfg *config.Config) (*Bot, error) {
 		trackedPlayers:  trackedPlayers,
 		analyzedMatches: make(map[string][]string),
 		analysisCache:   make(map[string]*AnalysisCache),
+		messageContext:  make(map[string]*MessageContext),
 		stopPolling:     make(chan struct{}),
 	}
 
 	// Register handlers
 	session.AddHandler(bot.onReady)
 	session.AddHandler(bot.onInteractionCreate)
+	session.AddHandler(bot.onMessageCreate)
 
 	return bot, nil
 }
@@ -547,6 +562,20 @@ func (b *Bot) handleAnalyze(s *discordgo.Session, i *discordgo.InteractionCreate
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 		Components: &components,
 	})
+
+	// Save context for AI chat replies
+	if msg, err := s.InteractionResponse(i.Interaction); err == nil {
+		contextData := map[string]interface{}{
+			"match_id":      matchID,
+			"target":        riotID,
+			"win":           matchData.Win,
+			"game_mode":     matchData.GameMode,
+			"duration":      matchData.GameDurationMinutes,
+			"players":       analysisResult.Players,
+			"lane_matchups": matchData.LaneMatchups,
+		}
+		b.saveMessageContext(msg.ID, "analysis", contextData)
+	}
 }
 
 // handleComponentInteraction handles button/component interactions.
@@ -690,18 +719,53 @@ func (b *Bot) pollMatches() {
 }
 
 // checkMatches checks for new matches for all tracked players.
-// Optimized: Sequential with delay to avoid rate limiting
+// Optimized: Parallel processing with semaphore-based rate limiting
 func (b *Bot) checkMatches() {
 	players := b.trackedPlayers.GetAll()
 	if len(players) == 0 {
 		return
 	}
 
+	var wg sync.WaitGroup
+	// Semaphore to limit concurrent API requests (Riot rate limit friendly)
+	sem := make(chan struct{}, 5) // Max 5 concurrent requests
+	// Rate limiter: 1 request per 100ms = 10 req/sec (well under Riot's 20/sec)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	defer cancel()
+
 	for puuid, data := range players {
-		b.checkPlayerMatch(puuid, data)
-		// Small delay between API calls to reduce burst
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			log.Println("Polling timeout, waiting for remaining goroutines...")
+			wg.Wait()
+			return
+		case <-ticker.C:
+			// Rate limit: wait for next tick
+		}
+
+		// Copy data to avoid data race (data is already a copy from GetAll)
+		playerCopy := data
+
+		wg.Add(1)
+		go func(p string, d *storage.TrackedPlayer) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			b.checkPlayerMatch(p, d)
+		}(puuid, &playerCopy)
 	}
+
+	wg.Wait()
 }
 
 // checkPlayerMatch checks for new match for a single player.
@@ -827,6 +891,18 @@ func (b *Bot) checkPlayerMatch(puuid string, data *storage.TrackedPlayer) {
 		Components: &components,
 	})
 
+	// Save context for AI chat replies
+	contextData := map[string]interface{}{
+		"match_id":      latestMatchID,
+		"target":        data.Name,
+		"win":           matchData.Win,
+		"game_mode":     matchData.GameMode,
+		"duration":      matchData.GameDurationMinutes,
+		"players":       analysisResult.Players,
+		"lane_matchups": matchData.LaneMatchups,
+	}
+	b.saveMessageContext(msg.ID, "analysis", contextData)
+
 	// Mark as analyzed
 	b.analyzesMu.Lock()
 	b.analyzedMatches[latestMatchID] = append(b.analyzedMatches[latestMatchID], data.ChannelID)
@@ -874,4 +950,92 @@ func (b *Bot) getAnalysisCache(matchID string) *AnalysisCache {
 	b.cacheMu.RLock()
 	defer b.cacheMu.RUnlock()
 	return b.analysisCache[matchID]
+}
+
+// saveMessageContext saves context for a bot message (for AI chat replies).
+func (b *Bot) saveMessageContext(messageID string, contextType string, data map[string]interface{}) {
+	b.contextMu.Lock()
+	defer b.contextMu.Unlock()
+
+	b.messageContext[messageID] = &MessageContext{
+		Type:      contextType,
+		Data:      data,
+		CreatedAt: time.Now(),
+	}
+
+	// Cleanup old entries (keep max 100, remove entries older than 1 hour)
+	if len(b.messageContext) > 100 {
+		oneHourAgo := time.Now().Add(-1 * time.Hour)
+		for id, ctx := range b.messageContext {
+			if ctx.CreatedAt.Before(oneHourAgo) {
+				delete(b.messageContext, id)
+			}
+		}
+		// If still too many, remove oldest
+		if len(b.messageContext) > 100 {
+			for id := range b.messageContext {
+				delete(b.messageContext, id)
+				break
+			}
+		}
+	}
+}
+
+// getMessageContext retrieves context for a bot message.
+func (b *Bot) getMessageContext(messageID string) *MessageContext {
+	b.contextMu.RLock()
+	defer b.contextMu.RUnlock()
+	return b.messageContext[messageID]
+}
+
+// onMessageCreate handles message create events (for reply-based AI chat).
+func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+	// Ignore bot messages
+	if m.Author.ID == s.State.User.ID {
+		return
+	}
+
+	// Check if this is a reply to a bot message
+	if m.MessageReference == nil {
+		return
+	}
+
+	// Get the referenced message
+	refMsg, err := s.ChannelMessage(m.ChannelID, m.MessageReference.MessageID)
+	if err != nil {
+		return
+	}
+
+	// Check if referenced message is from the bot
+	if refMsg.Author.ID != s.State.User.ID {
+		return
+	}
+
+	// Get context for the referenced message
+	ctx := b.getMessageContext(refMsg.ID)
+	if ctx == nil {
+		// No context found, ignore
+		return
+	}
+
+	// User's question
+	question := strings.TrimSpace(m.Content)
+	if question == "" {
+		return
+	}
+
+	// Show typing indicator
+	s.ChannelTyping(m.ChannelID)
+
+	// Call AI with context
+	response, err := b.aiClient.ChatWithContext(ctx.Type, ctx.Data, question)
+	if err != nil {
+		log.Printf("AI chat error: %v", err)
+		embed := embeds.Error("Không thể trả lời lúc này. Thử lại sau nhé!", "")
+		s.ChannelMessageSendEmbedReply(m.ChannelID, embed, m.Reference())
+		return
+	}
+
+	// Send response as reply
+	s.ChannelMessageSendReply(m.ChannelID, response, m.Reference())
 }

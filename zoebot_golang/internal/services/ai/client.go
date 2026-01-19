@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -172,7 +173,7 @@ func (c *Client) makeAPIRequest(matchData *riot.ParsedMatchData) (string, error)
 		MaxTokens:   20000,
 		TopP:        1,
 		ResponseFormat: &ResponseFormat{
-			Type:       "json_schema",
+			Type: "json_schema",
 			JSONSchema: &JSONSchema{
 				Name:   "match_analysis",
 				Strict: true,
@@ -222,28 +223,65 @@ func (c *Client) makeAPIRequest(matchData *riot.ParsedMatchData) (string, error)
 	return chatResp.Choices[0].Message.Content, nil
 }
 
+// jsonBlockRegex matches ```json ... ``` code blocks
+var jsonBlockRegex = regexp.MustCompile("(?s)```json\\s*(.*?)\\s*```")
+
 // parseResponse parses the AI response content.
 func (c *Client) parseResponse(content string) (*AnalysisResult, error) {
-	// Clean up markdown code blocks if present
-	content = strings.TrimSpace(content)
-	if strings.HasPrefix(content, "```json") {
-		content = content[7:]
+	jsonStr := extractJSON(content)
+	if jsonStr == "" {
+		log.Printf("Failed to extract JSON from AI response: %s", content[:min(200, len(content))])
+		return nil, fmt.Errorf("no valid JSON found in AI response")
 	}
-	if strings.HasPrefix(content, "```") {
-		content = content[3:]
-	}
-	if strings.HasSuffix(content, "```") {
-		content = content[:len(content)-3]
-	}
-	content = strings.TrimSpace(content)
 
 	var result AnalysisResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		log.Printf("Failed to parse AI JSON: %v", err)
 		return nil, fmt.Errorf("failed to parse AI response: %w", err)
 	}
 
 	return &result, nil
+}
+
+// extractJSON extracts JSON from various response formats.
+// Handles: raw JSON, ```json blocks, mixed text with JSON
+func extractJSON(content string) string {
+	content = strings.TrimSpace(content)
+
+	// Try 1: Extract from ```json ... ``` code block
+	if matches := jsonBlockRegex.FindStringSubmatch(content); len(matches) > 1 {
+		return strings.TrimSpace(matches[1])
+	}
+
+	// Try 2: Extract from ``` ... ``` code block (no json tag)
+	if strings.Contains(content, "```") {
+		start := strings.Index(content, "```")
+		end := strings.LastIndex(content, "```")
+		if start != end && start != -1 {
+			inner := content[start+3 : end]
+			// Remove potential language tag on first line
+			if idx := strings.Index(inner, "\n"); idx != -1 {
+				firstLine := strings.TrimSpace(inner[:idx])
+				if !strings.HasPrefix(firstLine, "{") {
+					inner = inner[idx+1:]
+				}
+			}
+			inner = strings.TrimSpace(inner)
+			if strings.HasPrefix(inner, "{") && strings.HasSuffix(inner, "}") {
+				return inner
+			}
+		}
+	}
+
+	// Try 3: Find JSON object directly in content
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start != -1 && end > start {
+		return content[start : end+1]
+	}
+
+	// Fallback: return original content
+	return content
 }
 
 // GetScoreEmoji returns emoji based on player score.
@@ -258,4 +296,85 @@ func GetScoreEmoji(score float64) string {
 	default:
 		return "❌"
 	}
+}
+
+// ChatWithContext handles conversational AI chat with context from previous bot messages.
+func (c *Client) ChatWithContext(contextType string, contextData map[string]interface{}, question string) (string, error) {
+	if c.apiKey == "" {
+		return "", fmt.Errorf("API key not configured")
+	}
+
+	// Build context string from data
+	contextJSON, err := json.MarshalIndent(contextData, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal context: %w", err)
+	}
+
+	userPrompt := fmt.Sprintf(`CONTEXT TYPE: %s
+
+CONTEXT DATA:
+%s
+
+CÂU HỎI CỦA USER:
+%s
+
+Trả lời ngắn gọn, súc tích (2-4 câu), giữ phong cách Zoe!`, contextType, string(contextJSON), question)
+
+	payload := ChatRequest{
+		Model: c.model,
+		Messages: []ChatMessage{
+			{Role: "system", Content: ChatSystemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+		Temperature: 0.8,
+		MaxTokens:   500,
+		TopP:        1,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.apiURL, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("AI Chat API Error: %d - %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("API error %d", resp.StatusCode)
+	}
+
+	var chatResp ChatResponse
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(chatResp.Choices) == 0 {
+		return "", fmt.Errorf("no response from AI")
+	}
+
+	response := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+
+	// Limit response length for Discord
+	if len(response) > 1900 {
+		response = response[:1900] + "..."
+	}
+
+	return response, nil
 }

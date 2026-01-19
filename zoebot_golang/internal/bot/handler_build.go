@@ -46,6 +46,26 @@ func (b *Bot) handleBuild(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
 	})
+
+	// Save context for AI chat replies
+	if msg, err := s.InteractionResponse(i.Interaction); err == nil {
+		contextData := map[string]interface{}{
+			"champion":        buildData.Champion,
+			"role":            buildData.Role,
+			"primary_tree":    buildData.PrimaryTree,
+			"primary_runes":   buildData.PrimaryRunes,
+			"secondary_tree":  buildData.SecondaryTree,
+			"secondary_runes": buildData.SecondaryRunes,
+			"stat_shards":     buildData.StatShards,
+			"starter_items":   buildData.StarterItems,
+			"boots":           buildData.Boots,
+			"core_items":      buildData.CoreItems,
+			"rune_winrate":    buildData.RuneWinRate,
+			"item_winrate":    buildData.ItemWinRate,
+			"patch":           buildData.PatchVersion,
+		}
+		b.saveMessageContext(msg.ID, "build", contextData)
+	}
 }
 
 // createBuildEmbed creates a Discord embed for build data.

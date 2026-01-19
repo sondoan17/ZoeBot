@@ -198,14 +198,17 @@ func (s *TrackedPlayersStore) Delete(puuid string) {
 	s.mu.Unlock()
 }
 
-// GetAll returns all tracked players.
-func (s *TrackedPlayersStore) GetAll() map[string]*TrackedPlayer {
+// GetAll returns all tracked players as a copy map.
+// Returns copies of TrackedPlayer to prevent data races.
+func (s *TrackedPlayersStore) GetAll() map[string]TrackedPlayer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make(map[string]*TrackedPlayer, len(s.players))
+	result := make(map[string]TrackedPlayer, len(s.players))
 	for k, v := range s.players {
-		result[k] = v
+		if v != nil {
+			result[k] = *v // Copy the struct value
+		}
 	}
 	return result
 }

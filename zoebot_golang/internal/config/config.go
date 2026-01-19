@@ -2,10 +2,13 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -16,9 +19,9 @@ type Config struct {
 	DiscordToken string
 
 	// Riot API
-	RiotAPIKey         string
-	RiotBaseURLAccount string
-	RiotBaseURLMatch   string
+	RiotAPIKey          string
+	RiotBaseURLAccount  string
+	RiotBaseURLMatch    string
 	RiotBaseURLPlatform string // For summoner/league APIs (vn2.api.riotgames.com)
 
 	// AI / LLM API
@@ -31,7 +34,7 @@ type Config struct {
 	RedisKeyTrackedPlayers string
 
 	// Data Dragon
-	DDragonVersion        string
+	DDragonVersion         string
 	DDragonChampionIconURL string
 
 	// Paths
@@ -42,6 +45,12 @@ type Config struct {
 func Load() (*Config, error) {
 	// Try to load .env file (ignore error if not exists)
 	_ = godotenv.Load()
+
+	// Fetch latest Data Dragon version dynamically (fallback to env/default)
+	ddragonVersion := getEnvOrDefault("DDRAGON_VERSION", "")
+	if ddragonVersion == "" {
+		ddragonVersion = fetchLatestDDragonVersion()
+	}
 
 	cfg := &Config{
 		// Discord
@@ -63,7 +72,7 @@ func Load() (*Config, error) {
 		RedisKeyTrackedPlayers: getEnvOrDefault("REDIS_KEY_TRACKED_PLAYERS", "zoebot:tracked_players"),
 
 		// Data Dragon
-		DDragonVersion:         getEnvOrDefault("DDRAGON_VERSION", "16.1.1"),
+		DDragonVersion:         ddragonVersion,
 		DDragonChampionIconURL: "", // Will be set below
 
 		// Paths
@@ -72,6 +81,8 @@ func Load() (*Config, error) {
 
 	// Build champion icon URL template
 	cfg.DDragonChampionIconURL = "https://ddragon.leagueoflegends.com/cdn/" + cfg.DDragonVersion + "/img/champion/%s.png"
+
+	log.Printf("Using Data Dragon version: %s", cfg.DDragonVersion)
 
 	return cfg, nil
 }
@@ -114,4 +125,39 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// fetchLatestDDragonVersion fetches the latest Data Dragon version from Riot API.
+// Returns a fallback version if the fetch fails.
+func fetchLatestDDragonVersion() string {
+	const (
+		versionsURL     = "https://ddragon.leagueoflegends.com/api/versions.json"
+		fallbackVersion = "15.1.1"
+	)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(versionsURL)
+	if err != nil {
+		log.Printf("Failed to fetch DDragon versions: %v, using fallback %s", err, fallbackVersion)
+		return fallbackVersion
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("DDragon API returned %d, using fallback %s", resp.StatusCode, fallbackVersion)
+		return fallbackVersion
+	}
+
+	var versions []string
+	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
+		log.Printf("Failed to parse DDragon versions: %v, using fallback %s", err, fallbackVersion)
+		return fallbackVersion
+	}
+
+	if len(versions) == 0 {
+		log.Printf("DDragon versions list is empty, using fallback %s", fallbackVersion)
+		return fallbackVersion
+	}
+
+	return versions[0] // First version is the latest
 }
