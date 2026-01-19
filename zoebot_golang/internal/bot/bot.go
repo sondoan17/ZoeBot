@@ -108,6 +108,9 @@ func (b *Bot) Start() error {
 	// Start polling task
 	go b.pollMatches()
 
+	// Start context cleanup task
+	go b.startContextCleanup()
+
 	return nil
 }
 
@@ -963,11 +966,11 @@ func (b *Bot) saveMessageContext(messageID string, contextType string, data map[
 		CreatedAt: time.Now(),
 	}
 
-	// Cleanup old entries (keep max 100, remove entries older than 1 hour)
+	// Cleanup old entries (keep max 100, remove entries older than 24 hours)
 	if len(b.messageContext) > 100 {
-		oneHourAgo := time.Now().Add(-1 * time.Hour)
+		ttlAgo := time.Now().Add(-24 * time.Hour)
 		for id, ctx := range b.messageContext {
-			if ctx.CreatedAt.Before(oneHourAgo) {
+			if ctx.CreatedAt.Before(ttlAgo) {
 				delete(b.messageContext, id)
 			}
 		}
@@ -986,6 +989,48 @@ func (b *Bot) getMessageContext(messageID string) *MessageContext {
 	b.contextMu.RLock()
 	defer b.contextMu.RUnlock()
 	return b.messageContext[messageID]
+}
+
+// startContextCleanup starts background goroutine to cleanup expired contexts.
+func (b *Bot) startContextCleanup() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	log.Println("Context cleanup started (10min interval)")
+
+	for {
+		select {
+		case <-b.stopPolling:
+			log.Println("Context cleanup stopped")
+			return
+		case <-ticker.C:
+			b.cleanupOldContexts()
+		}
+	}
+}
+
+// cleanupOldContexts removes contexts older than 24 hours.
+func (b *Bot) cleanupOldContexts() {
+	b.contextMu.Lock()
+	defer b.contextMu.Unlock()
+
+	if len(b.messageContext) == 0 {
+		return
+	}
+
+	ttlAgo := time.Now().Add(-24 * time.Hour)
+	deleted := 0
+
+	for id, ctx := range b.messageContext {
+		if ctx.CreatedAt.Before(ttlAgo) {
+			delete(b.messageContext, id)
+			deleted++
+		}
+	}
+
+	if deleted > 0 {
+		log.Printf("Cleaned up %d expired contexts, %d remaining", deleted, len(b.messageContext))
+	}
 }
 
 // onMessageCreate handles message create events (for reply-based AI chat).
