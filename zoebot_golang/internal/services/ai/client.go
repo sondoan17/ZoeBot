@@ -169,6 +169,7 @@ func (c *Client) makeAPIRequest(matchData *riot.ParsedMatchData) (string, error)
 			{Role: "system", Content: SystemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
+		Stream: false,
 		Temperature: 0.7,
 		MaxTokens:   20000,
 		TopP:        1,
