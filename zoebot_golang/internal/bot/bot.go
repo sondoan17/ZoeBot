@@ -43,9 +43,11 @@ type Bot struct {
 	analyzedMatches map[string][]string        // matchID -> []channelID
 	analysisCache   map[string]*AnalysisCache  // matchID -> analysis result
 	messageContext  map[string]*MessageContext // messageID -> context for AI chat
+	musicPlayers    map[string]*musicPlayer
 	analyzesMu      sync.RWMutex
 	cacheMu         sync.RWMutex
 	contextMu       sync.RWMutex
+	musicMu         sync.RWMutex
 	stopPolling     chan struct{}
 	commands        []*discordgo.ApplicationCommand
 }
@@ -60,6 +62,7 @@ func New(cfg *config.Config) (*Bot, error) {
 	// Set intents
 	session.Identify.Intents = discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages |
+		discordgo.IntentsGuildVoiceStates |
 		discordgo.IntentsMessageContent
 
 	// Create Redis client and tracked players store
@@ -81,6 +84,7 @@ func New(cfg *config.Config) (*Bot, error) {
 		analyzedMatches: make(map[string][]string),
 		analysisCache:   make(map[string]*AnalysisCache),
 		messageContext:  make(map[string]*MessageContext),
+		musicPlayers:    make(map[string]*musicPlayer),
 		stopPolling:     make(chan struct{}),
 	}
 
@@ -117,6 +121,7 @@ func (b *Bot) Start() error {
 // Stop gracefully shuts down the bot.
 func (b *Bot) Stop() error {
 	close(b.stopPolling)
+	b.shutdownMusicPlayers()
 	b.trackedPlayers.Save()
 	return b.session.Close()
 }
@@ -129,6 +134,34 @@ func (b *Bot) onReady(s *discordgo.Session, event *discordgo.Ready) {
 // registerCommands registers all slash commands.
 func (b *Bot) registerCommands() error {
 	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:        "play",
+			Description: "Phát nhạc từ YouTube bằng link hoặc từ khoá tìm kiếm",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "query",
+					Description: "Link YouTube hoặc từ khoá",
+					Required:    true,
+				},
+			},
+		},
+		{
+			Name:        "skip",
+			Description: "Bỏ qua bài đang phát",
+		},
+		{
+			Name:        "stop",
+			Description: "Dừng nhạc và xoá hàng chờ",
+		},
+		{
+			Name:        "leave",
+			Description: "Cho bot rời voice channel",
+		},
+		{
+			Name:        "queue",
+			Description: "Xem hàng chờ nhạc hiện tại",
+		},
 		{
 			Name:        "ping",
 			Description: "Kiểm tra bot còn sống không",
@@ -241,6 +274,16 @@ func (b *Bot) registerCommands() error {
 func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type == discordgo.InteractionApplicationCommand {
 		switch i.ApplicationCommandData().Name {
+		case "play":
+			b.handlePlay(s, i)
+		case "skip":
+			b.handleSkip(s, i)
+		case "stop":
+			b.handleStopMusic(s, i)
+		case "leave":
+			b.handleLeave(s, i)
+		case "queue":
+			b.handleQueue(s, i)
 		case "ping":
 			b.handlePing(s, i)
 		case "track":

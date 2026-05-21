@@ -20,6 +20,8 @@ services:
     read_only: true
     security_opt:
       - no-new-privileges:true
+    tmpfs:
+      - /tmp
     # Health check (uses built-in flag)
     healthcheck:
       test: ["CMD", "/zoebot", "-health"]
