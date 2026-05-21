@@ -4,17 +4,19 @@
 
 **Goal:** Đổi pipeline phát nhạc của ZoeBot từ "tải full MP3 → phát" sang "stream URL trực tiếp qua ffmpeg → phát" để giảm độ trễ từ ~10-20s xuống ~2s.
 
-**Architecture:** `yt-dlp --get-url` lấy direct audio URL + metadata (không tải file) → spawn `ffmpeg` đọc URL, output PCM s16le 48kHz stereo qua stdout → `dgvoice.PlayAudio` đọc stdout, encode Opus, gửi vào Discord voice connection. Cleanup dùng `exec.CommandContext` + cancel để đảm bảo không zombie process.
+**Architecture:** `yt-dlp --get-url` lấy direct audio URL + metadata (không tải file) → spawn `ffmpeg` đọc URL, output Opus đóng gói trong Ogg container qua stdout → tự đọc Ogg pages từ stdout, lấy ra Opus packets, gửi qua `voice.OpusSend` chan của discordgo. Cleanup dùng `exec.CommandContext` + cancel để đảm bảo không zombie process.
 
-**Tech Stack:** Go 1.24, `github.com/bwmarrin/discordgo`, `github.com/bwmarrin/dgvoice`, external binaries `yt-dlp` + `ffmpeg`.
+**Tech Stack:** Go 1.24, `github.com/bwmarrin/discordgo`, external binaries `yt-dlp` + `ffmpeg`. **Bỏ `github.com/bwmarrin/dgvoice`** — library này cần CGO + libopus mà environment dev/prod hiện tại không có. Pipeline mới để ffmpeg lo phần encode Opus, bot chỉ parse Ogg + relay packets.
 
 ---
 
 ## File Structure
 
+- **Create:** `internal/bot/oggopus.go` — Ogg-Opus reader + Discord sender (bỏ phụ thuộc `dgvoice`)
 - **Modify:** `internal/bot/music.go` — đổi struct `queuedTrack`, viết lại `prepareTrack` và `playTrack`, bỏ logic file cleanup
 - **Modify:** `internal/config/config.go` — bỏ field `MusicTmpDir`
 - **Modify:** `.env.example` — bỏ entry `MUSIC_TMP_DIR`
+- **Modify:** `go.mod` / `go.sum` — gỡ dependency `github.com/bwmarrin/dgvoice` và `layeh.com/gopus`
 
 Không tạo file mới. Toàn bộ thay đổi nằm trong scope của music subsystem hiện có.
 
@@ -244,14 +246,196 @@ Lưu ý:
 
 ---
 
-## Task 4: Viết lại `playTrack` để stream qua ffmpeg
+## Task 4: Tạo Ogg-Opus reader và viết lại `playTrack`
 
 **Files:**
-- Modify: `internal/bot/music.go:327-340` (hàm `playTrack`)
+- Create: `internal/bot/oggopus.go`
+- Modify: `internal/bot/music.go` (hàm `playTrack`)
+- Modify: `internal/bot/music.go` (imports — bỏ `dgvoice`)
 
-- [ ] **Step 1: Thay thân hàm `playTrack`**
+### Tại sao đổi hướng
 
-Mở `internal/bot/music.go`. Hàm `playTrack` hiện tại:
+Hướng cũ (`dgvoice.PlayAudio` đọc PCM) cần `layeh.com/gopus` — CGO binding cần libopus + C compiler. Environment hiện tại không có. Hướng mới: để ffmpeg encode Opus luôn, output Ogg-Opus container qua stdout, bot tự parse Ogg pages → lấy Opus packets → gửi vào `voice.OpusSend` chan. Pure Go, không cần CGO.
+
+### Cấu trúc Ogg-Opus tóm tắt
+
+Ogg stream gồm các "page". Page header bắt đầu bằng magic `"OggS"`, theo sau là:
+- 1 byte version (luôn 0)
+- 1 byte header_type (BOS, EOS, continuation flags)
+- 8 bytes granule position
+- 4 bytes serial number
+- 4 bytes page sequence
+- 4 bytes CRC
+- 1 byte page_segments (số segment trong page, max 255)
+- N bytes segment table (mỗi byte là size 0-255 của 1 segment)
+- Data: tổng các segment
+
+Một packet được tạo từ 1 hoặc nhiều segment liên tiếp. Segment có size 255 nghĩa là packet còn tiếp ở segment kế (có thể spill sang page kế nếu segment cuối page = 255). Segment có size < 255 là segment cuối của packet.
+
+2 packet đầu của Ogg-Opus là header (`OpusHead`, `OpusTags`) — không phải audio, **phải skip**. Từ packet thứ 3 trở đi là Opus audio frames, mỗi packet là 1 frame 20ms ở config Discord chuẩn.
+
+### Step 1: Tạo `internal/bot/oggopus.go`
+
+Tạo file mới với nội dung:
+
+```go
+package bot
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+
+	"github.com/bwmarrin/discordgo"
+)
+
+// streamOggOpusToVoice reads Ogg-encapsulated Opus packets from r and forwards
+// each audio packet to the Discord voice connection's OpusSend channel.
+//
+// It returns when r reaches EOF, when stop receives a value, or on a fatal
+// parse error. It skips the two mandatory Ogg-Opus header packets
+// (OpusHead, OpusTags) before forwarding audio.
+func streamOggOpusToVoice(v *discordgo.VoiceConnection, r io.Reader, stop <-chan bool) error {
+	if v == nil {
+		return errors.New("voice connection is nil")
+	}
+
+	if err := v.Speaking(true); err != nil {
+		return fmt.Errorf("set speaking: %w", err)
+	}
+	defer func() { _ = v.Speaking(false) }()
+
+	headersSkipped := 0
+	for {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+
+		packet, err := readOggPacket(r)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if len(packet) == 0 {
+			continue
+		}
+
+		if headersSkipped < 2 {
+			headersSkipped++
+			continue
+		}
+
+		if !v.Ready || v.OpusSend == nil {
+			return errors.New("voice connection not ready")
+		}
+
+		select {
+		case v.OpusSend <- packet:
+		case <-stop:
+			return nil
+		}
+	}
+}
+
+// readOggPacket reads the next Opus packet from an Ogg stream. A packet may
+// span multiple Ogg pages if its final segment is 255 bytes. Returns io.EOF
+// only when the stream ends cleanly between packets.
+func readOggPacket(r io.Reader) ([]byte, error) {
+	var packet []byte
+	for {
+		segments, err := readOggPage(r)
+		if err != nil {
+			if err == io.EOF && len(packet) == 0 {
+				return nil, io.EOF
+			}
+			if err == io.EOF {
+				return nil, io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+
+		for _, seg := range segments {
+			packet = append(packet, seg.data...)
+			if !seg.continued {
+				return packet, nil
+			}
+		}
+	}
+}
+
+type oggSegment struct {
+	data      []byte
+	continued bool // true if this segment is part of a packet that continues
+}
+
+// readOggPage reads one Ogg page and returns its segments split by lacing
+// values. Each returned segment's `continued` flag is true when the next
+// segment is part of the same packet.
+func readOggPage(r io.Reader) ([]oggSegment, error) {
+	header := make([]byte, 27)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return nil, err
+	}
+
+	if string(header[0:4]) != "OggS" {
+		return nil, fmt.Errorf("bad Ogg page magic: %q", header[0:4])
+	}
+	if header[4] != 0 {
+		return nil, fmt.Errorf("unsupported Ogg version: %d", header[4])
+	}
+
+	pageSegments := int(header[26])
+	segTable := make([]byte, pageSegments)
+	if _, err := io.ReadFull(r, segTable); err != nil {
+		return nil, err
+	}
+
+	totalData := 0
+	for _, s := range segTable {
+		totalData += int(s)
+	}
+	data := make([]byte, totalData)
+	if totalData > 0 {
+		if _, err := io.ReadFull(r, data); err != nil {
+			return nil, err
+		}
+	}
+
+	segments := make([]oggSegment, 0, len(segTable))
+	offset := 0
+	var current []byte
+	for _, size := range segTable {
+		current = append(current, data[offset:offset+int(size)]...)
+		offset += int(size)
+		if size < 255 {
+			segments = append(segments, oggSegment{data: current, continued: false})
+			current = nil
+		}
+	}
+	if current != nil {
+		segments = append(segments, oggSegment{data: current, continued: true})
+	}
+	return segments, nil
+}
+
+// keep encoding/binary in import (used implicitly via byte ordering decisions);
+// we don't currently parse multi-byte fields beyond what's needed.
+var _ = binary.LittleEndian
+```
+
+Lưu ý:
+- `binary` import giữ lại sau dòng `var _` để tránh lỗi unused. Có thể bỏ sau khi mở rộng parser nếu cần thật, nhưng tạm thế cho gọn.
+- Hàm này hoạt động đúng spec RFC 7845: 2 packet đầu (OpusHead + OpusTags) là header, skip; từ packet 3 trở đi là audio.
+- Khi `stop` nhận signal, function trả về `nil` ngay (kể cả đang block ở `OpusSend`).
+
+### Step 2: Thay thân hàm `playTrack` trong `internal/bot/music.go`
+
+Hàm `playTrack` hiện tại:
 
 ```go
 func (p *musicPlayer) playTrack(track *queuedTrack) error {
@@ -282,9 +466,14 @@ func (p *musicPlayer) playTrack(track *queuedTrack) error {
 		"-reconnect_streamed", "1",
 		"-reconnect_delay_max", "5",
 		"-i", track.StreamURL,
-		"-f", "s16le",
+		"-vn",
+		"-c:a", "libopus",
+		"-b:a", "128k",
 		"-ar", "48000",
 		"-ac", "2",
+		"-frame_duration", "20",
+		"-application", "audio",
+		"-f", "ogg",
 		"pipe:1",
 	)
 
@@ -307,20 +496,79 @@ func (p *musicPlayer) playTrack(track *queuedTrack) error {
 		p.mu.Unlock()
 	}()
 
-	dgvoice.PlayAudio(p.voice, stdout, stop)
+	streamErr := streamOggOpusToVoice(p.voice, stdout, stop)
 
 	cancel()
 	_ = cmd.Wait()
+
+	if streamErr != nil {
+		return fmt.Errorf("stream opus: %w", streamErr)
+	}
 	return nil
 }
 ```
 
-Giải thích:
-- `exec.CommandContext` + `cancel()` ở `defer` đảm bảo ffmpeg bị kill khi function return, dù có lỗi hay skip
-- `cmd.StdoutPipe()` lấy reader từ stdout của ffmpeg
-- `cmd.Start()` chạy ffmpeg async (khác `Run`/`CombinedOutput` là sync)
-- `dgvoice.PlayAudio` (khác `PlayAudioFile` ở chỗ nhận `io.Reader` thay vì path) sẽ đọc PCM, encode Opus, gửi vào voice connection. Block đến khi reader EOF hoặc `stop` chan nhận signal.
-- Sau khi `PlayAudio` return, `cancel()` kill ffmpeg, `cmd.Wait()` reap process
+Giải thích args ffmpeg:
+- `-vn` bỏ video stream (YouTube nguồn có thể có cả video, không cần)
+- `-c:a libopus` encode Opus
+- `-b:a 128k` bitrate 128kbps (cao hơn dgvoice default 64kbps một chút, chất lượng tốt hơn)
+- `-ar 48000 -ac 2` khớp Discord (48kHz stereo)
+- `-frame_duration 20` mỗi Opus frame 20ms (chuẩn Discord)
+- `-application audio` Opus optimize cho music (không phải voice)
+- `-f ogg` đóng gói Ogg-Opus
+
+### Step 3: Bỏ import `dgvoice`
+
+Trong `internal/bot/music.go`, block import hiện tại có:
+
+```go
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/bwmarrin/dgvoice"
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/zoebot/internal/embeds"
+)
+```
+
+Bỏ dòng `"github.com/bwmarrin/dgvoice"`. Kết quả (sau Task 5 sẽ tinh chỉnh thêm `os`, `path/filepath`):
+
+```go
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/zoebot/internal/embeds"
+)
+```
+
+### Step 4: Verify build
+
+Run: `go build ./...` từ `C:\Users\sondo\Desktop\ZoeBot\zoebot_golang`
+
+Expected: PASS hoặc chỉ còn lỗi liên quan đến file cleanup (Task 5) — `os.RemoveAll(filepath.Dir(...))` còn ref `track.FilePath` cũ. Vào Task 5 để xử lý.
+
+Nếu thấy lỗi liên quan tới `dgvoice` hoặc `gopus` thì có chỗ chưa bỏ — search lại file.
 
 ---
 

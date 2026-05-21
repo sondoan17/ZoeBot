@@ -5,14 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/dgvoice"
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/zoebot/internal/embeds"
@@ -21,7 +18,7 @@ import (
 type queuedTrack struct {
 	Title       string
 	SourceURL   string
-	FilePath    string
+	StreamURL   string
 	RequestedBy string
 }
 
@@ -213,19 +210,9 @@ func (b *Bot) findMemberVoiceChannel(guildID, userID string) (string, error) {
 }
 
 func (b *Bot) prepareTrack(query, requestedBy string) (*queuedTrack, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := os.MkdirAll(b.cfg.MusicTmpDir, 0o755); err != nil {
-		return nil, fmt.Errorf("tạo thư mục tạm thất bại: %w", err)
-	}
-
-	trackDir, err := os.MkdirTemp(b.cfg.MusicTmpDir, "zoebot-music-")
-	if err != nil {
-		return nil, fmt.Errorf("tạo thư mục bài hát thất bại: %w", err)
-	}
-
-	outputTemplate := filepath.Join(trackDir, "audio.%(ext)s")
 	targetQuery := query
 	if !looksLikeURL(query) {
 		targetQuery = "ytsearch1:" + query
@@ -235,36 +222,27 @@ func (b *Bot) prepareTrack(query, requestedBy string) (*queuedTrack, error) {
 		ctx,
 		b.cfg.YTDLPPath,
 		"--no-playlist",
-		"--extract-audio",
-		"--audio-format", "mp3",
-		"--audio-quality", "0",
+		"--no-warnings",
+		"--format", "bestaudio",
 		"--print", "title",
 		"--print", "webpage_url",
-		"-o", outputTemplate,
+		"--print", "url",
 		targetQuery,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		_ = os.RemoveAll(trackDir)
 		return nil, fmt.Errorf("yt-dlp lỗi: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
 	lines := splitNonEmptyLines(string(out))
-	if len(lines) < 2 {
-		_ = os.RemoveAll(trackDir)
-		return nil, fmt.Errorf("không đọc được metadata từ yt-dlp")
-	}
-
-	files, err := filepath.Glob(filepath.Join(trackDir, "audio.*"))
-	if err != nil || len(files) == 0 {
-		_ = os.RemoveAll(trackDir)
-		return nil, fmt.Errorf("không tìm thấy file audio sau khi tải")
+	if len(lines) < 3 {
+		return nil, fmt.Errorf("không đọc được metadata từ yt-dlp (output: %s)", strings.TrimSpace(string(out)))
 	}
 
 	return &queuedTrack{
 		Title:       lines[0],
 		SourceURL:   lines[1],
-		FilePath:    files[0],
+		StreamURL:   lines[2],
 		RequestedBy: requestedBy,
 	}, nil
 }
@@ -315,8 +293,6 @@ func (p *musicPlayer) loop() {
 			_, _ = p.bot.session.ChannelMessageSendEmbed(p.channelID, embeds.Error("Phát nhạc lỗi rồi, bài này bị skip nha.", track.Title))
 		}
 
-		_ = os.RemoveAll(filepath.Dir(track.FilePath))
-
 		p.mu.Lock()
 		p.nowPlaying = nil
 		p.playing = false
@@ -325,18 +301,53 @@ func (p *musicPlayer) loop() {
 }
 
 func (p *musicPlayer) playTrack(track *queuedTrack) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, p.bot.cfg.FFmpegPath,
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_delay_max", "5",
+		"-i", track.StreamURL,
+		"-vn",
+		"-c:a", "libopus",
+		"-b:a", "128k",
+		"-ar", "48000",
+		"-ac", "2",
+		"-frame_duration", "20",
+		"-application", "audio",
+		"-f", "ogg",
+		"pipe:1",
+	)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("ffmpeg stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("ffmpeg start (kiểm tra ffmpeg đã cài chưa): %w", err)
+	}
+
 	stop := make(chan bool, 1)
 	p.mu.Lock()
 	p.stopPlayback = stop
 	p.mu.Unlock()
-
 	defer func() {
 		p.mu.Lock()
 		p.stopPlayback = make(chan bool, 1)
 		p.mu.Unlock()
 	}()
 
-	return dgvoice.PlayAudioFile(p.voice, track.FilePath, stop)
+	streamErr := streamOggOpusToVoice(p.voice, stdout, stop)
+
+	cancel()
+	_ = cmd.Wait()
+
+	if streamErr != nil {
+		return fmt.Errorf("stream opus: %w", streamErr)
+	}
+	return nil
 }
 
 func (p *musicPlayer) nextTrack() *queuedTrack {
@@ -365,15 +376,10 @@ func (p *musicPlayer) skip() bool {
 
 func (p *musicPlayer) stopAndClear() {
 	p.mu.Lock()
-	queued := p.queue
 	p.queue = nil
 	stop := p.stopPlayback
 	playing := p.playing
 	p.mu.Unlock()
-
-	for _, track := range queued {
-		_ = os.RemoveAll(filepath.Dir(track.FilePath))
-	}
 
 	if playing {
 		select {
@@ -401,12 +407,6 @@ func (p *musicPlayer) close() {
 	p.stopAndClear()
 	if p.voice != nil {
 		_ = p.voice.Disconnect()
-	}
-	if current := p.nowPlaying; current != nil {
-		_ = os.RemoveAll(filepath.Dir(current.FilePath))
-	}
-	for _, track := range p.queue {
-		_ = os.RemoveAll(filepath.Dir(track.FilePath))
 	}
 }
 
