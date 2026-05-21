@@ -16,12 +16,10 @@ RUN go mod tidy && \
     -trimpath \
     -o zoebot ./cmd/zoebot
 
-# Use scratch (empty) image for minimal size
-FROM scratch
+# Runtime image with tools required for YouTube audio playback
+FROM alpine:3.22
 
-# Copy certificates for HTTPS
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+RUN apk add --no-cache ca-certificates tzdata ffmpeg yt-dlp
 
 # Copy binary
 COPY --from=builder /app/zoebot /zoebot
@@ -31,6 +29,7 @@ COPY --from=builder /app/data /data
 
 # Set timezone
 ENV TZ=Asia/Ho_Chi_Minh
+ENV MUSIC_TMP_DIR=/tmp
 
 # Expose health check port
 EXPOSE 8080
