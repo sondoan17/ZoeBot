@@ -19,6 +19,9 @@ func streamOggOpusToVoice(ctx context.Context, v *discordgo.VoiceConnection, r i
 	if v == nil {
 		return errors.New("voice connection is nil")
 	}
+	if !v.Ready || v.OpusSend == nil {
+		return errors.New("voice connection not ready")
+	}
 
 	if err := v.Speaking(true); err != nil {
 		return fmt.Errorf("set speaking: %w", err)
@@ -49,10 +52,6 @@ func streamOggOpusToVoice(ctx context.Context, v *discordgo.VoiceConnection, r i
 		if headersSkipped < 2 {
 			headersSkipped++
 			continue
-		}
-
-		if !v.Ready || v.OpusSend == nil {
-			return errors.New("voice connection not ready")
 		}
 
 		select {
