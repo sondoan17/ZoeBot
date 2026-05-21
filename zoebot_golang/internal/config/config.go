@@ -38,9 +38,7 @@ type Config struct {
 	DDragonChampionIconURL string
 
 	// Paths
-	DataDir    string
-	FFmpegPath string
-	YTDLPPath  string
+	DataDir string
 }
 
 // Load reads configuration from environment variables.
@@ -78,9 +76,7 @@ func Load() (*Config, error) {
 		DDragonChampionIconURL: "", // Will be set below
 
 		// Paths
-		DataDir:    getEnvOrDefault("DATA_DIR", "data"),
-		FFmpegPath: getEnvOrDefault("FFMPEG_PATH", "ffmpeg"),
-		YTDLPPath:  getEnvOrDefault("YTDLP_PATH", "yt-dlp"),
+		DataDir: getEnvOrDefault("DATA_DIR", "data"),
 	}
 
 	// Build champion icon URL template
