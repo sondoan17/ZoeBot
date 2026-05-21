@@ -329,17 +329,20 @@ func (p *musicPlayer) playTrack(track *queuedTrack) error {
 		return fmt.Errorf("ffmpeg start (kiểm tra ffmpeg đã cài chưa): %w", err)
 	}
 
-	stop := make(chan bool, 1)
 	p.mu.Lock()
-	p.stopPlayback = stop
+	p.stopPlayback = make(chan bool, 1)
+	stopCh := p.stopPlayback
 	p.mu.Unlock()
-	defer func() {
-		p.mu.Lock()
-		p.stopPlayback = make(chan bool, 1)
-		p.mu.Unlock()
+
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
 
-	streamErr := streamOggOpusToVoice(p.voice, stdout, stop)
+	streamErr := streamOggOpusToVoice(ctx, p.voice, stdout)
 
 	cancel()
 	_ = cmd.Wait()

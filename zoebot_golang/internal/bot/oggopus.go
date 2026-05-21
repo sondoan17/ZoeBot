@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,10 +12,10 @@ import (
 // streamOggOpusToVoice reads Ogg-encapsulated Opus packets from r and forwards
 // each audio packet to the Discord voice connection's OpusSend channel.
 //
-// It returns when r reaches EOF, when stop receives a value, or on a fatal
-// parse error. It skips the two mandatory Ogg-Opus header packets
-// (OpusHead, OpusTags) before forwarding audio.
-func streamOggOpusToVoice(v *discordgo.VoiceConnection, r io.Reader, stop <-chan bool) error {
+// It returns when r reaches EOF, when ctx is cancelled, or on a fatal parse
+// error. It skips the two mandatory Ogg-Opus header packets (OpusHead,
+// OpusTags) before forwarding audio.
+func streamOggOpusToVoice(ctx context.Context, v *discordgo.VoiceConnection, r io.Reader) (retErr error) {
 	if v == nil {
 		return errors.New("voice connection is nil")
 	}
@@ -22,14 +23,16 @@ func streamOggOpusToVoice(v *discordgo.VoiceConnection, r io.Reader, stop <-chan
 	if err := v.Speaking(true); err != nil {
 		return fmt.Errorf("set speaking: %w", err)
 	}
-	defer func() { _ = v.Speaking(false) }()
+	defer func() {
+		if err := v.Speaking(false); err != nil && retErr == nil {
+			retErr = fmt.Errorf("clear speaking: %w", err)
+		}
+	}()
 
 	headersSkipped := 0
 	for {
-		select {
-		case <-stop:
+		if ctx.Err() != nil {
 			return nil
-		default:
 		}
 
 		packet, err := readOggPacket(r)
@@ -54,7 +57,7 @@ func streamOggOpusToVoice(v *discordgo.VoiceConnection, r io.Reader, stop <-chan
 
 		select {
 		case v.OpusSend <- packet:
-		case <-stop:
+		case <-ctx.Done():
 			return nil
 		}
 	}
